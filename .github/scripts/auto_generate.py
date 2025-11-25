@@ -25,7 +25,7 @@ FONT_PATH = os.path.join(ASSETS_DIR, "fonts/Montserrat-Bold.ttf")
 # Font Fallback to prevent crashes
 if not os.path.exists(FONT_PATH):
     print("⚠️ Custom font not found. Using system default.")
-    FONT_PATH = "DejaVu-Sans-Bold" # Ubuntu default
+    FONT_PATH = "DejaVu-Sans-Bold"
 
 # Ensure Directories Exist
 for d in [DATA_DIR, OUTPUT_DIR, CACHE_DIR]:
@@ -42,8 +42,10 @@ class AutoContentManager:
     def _load_history(self):
         if os.path.exists(self.history_file):
             try:
-                with open(self.history_file, 'r') as f: return json.load(f)
-            except: return []
+                with open(self.history_file, 'r') as f: 
+                    return json.load(f)
+            except: 
+                return []
         return []
 
     def save_history(self, entry_id):
@@ -106,7 +108,7 @@ class AutoContentManager:
         opt_a = f"{random.choice(verbs)} {random.choice(nouns)} {random.choice(conditions)}"
         opt_b = f"{random.choice(verbs)} {random.choice(nouns)} {random.choice(conditions)}"
         
-        pid = str(hash(opt_a + opt_b))
+        pid = str(abs(hash(opt_a + opt_b)))  # abs() to avoid negative IDs
         s1 = random.randint(35, 65)
         
         return {"id": pid, "option_a": opt_a, "option_b": opt_b, "stats": [s1, 100-s1]}
@@ -119,7 +121,7 @@ class AssetGenerator:
         clean_prompt = f"cinematic lighting, hyperrealistic, 4k, detailed, {prompt}"
         encoded = requests.utils.quote(clean_prompt)
         url = f"https://pollinations.ai/p/{encoded}?width=1080&height=960&nologo=true"
-        filename = os.path.join(CACHE_DIR, f"{side}_{hash(prompt)}.jpg")
+        filename = os.path.join(CACHE_DIR, f"{side}_{abs(hash(prompt))}.jpg")
         
         try:
             print(f"🎨 Generating AI Art: {prompt[:30]}...")
@@ -128,15 +130,14 @@ class AssetGenerator:
                 with open(filename, 'wb') as f:
                     f.write(r.content)
                 return filename
-        except:
-            print("⚠️ Image Gen failed, using fallback.")
+        except Exception as e:
+            print(f"⚠️ Image Gen failed: {e}")
         return None
 
     def create_gradient(self, w, h, c1, c2):
         """NumPy Gradient Generator"""
         r1, g1, b1 = c1
         r2, g2, b2 = c2
-        base = np.linspace(0, 1, h)
         r = np.tile(np.linspace(r1, r2, h).reshape(h, 1), (1, w))
         g = np.tile(np.linspace(g1, g2, h).reshape(h, 1), (1, w))
         b = np.tile(np.linspace(b1, b2, h).reshape(h, 1), (1, w))
@@ -151,7 +152,7 @@ def render_video(scenario, audio_path, output_file):
     
     # Audio Setup
     audio_clip = AudioFileClip(audio_path)
-    duration = audio_clip.duration + 5.0 # 3s think + 2s reveal
+    duration = audio_clip.duration + 5.0  # 3s think + 2s reveal
     W, H = 1080, 1920
 
     # 1. Background Layer (AI Image OR Gradient)
@@ -174,7 +175,15 @@ def render_video(scenario, audio_path, output_file):
         # Shadow
         s = TextClip(txt, font=FONT_PATH, fontsize=size, color='black', 
                      method='caption', size=(900, None), align='center')
-        s = s.set_position((pos[0]+4, pos[1]+4)).set_opacity(0.6).set_start(start).set_duration(duration-start)
+        
+        # Handle 'center' positioning properly
+        if isinstance(pos[0], str) and pos[0] == 'center':
+            shadow_pos = ('center', pos[1] + 4)
+        else:
+            shadow_pos = (pos[0] + 4, pos[1] + 4)
+        
+        s = s.set_position(shadow_pos).set_opacity(0.6).set_start(start).set_duration(duration-start)
+        
         # Main
         m = TextClip(txt, font=FONT_PATH, fontsize=size, color='white', 
                      method='caption', size=(900, None), align='center')
@@ -195,15 +204,12 @@ def render_video(scenario, audio_path, output_file):
     timer_bg = ColorClip(size=(W, 20), color=(50,50,50)).set_position(('center', timer_y)).set_duration(duration)
     
     choice_time = duration - 2.0
-    # Dynamic width lambda
-    def width_maker(t):
-        if t > choice_time: return 0
-        return int(W * (1 - (t / choice_time)))
     
-    # Use a moving clip to simulate shrinking because resizing is buggy in MoviePy 1.0.3
+    # Use a moving clip to simulate shrinking
     timer_fill = ColorClip(size=(W, 20), color=(255, 200, 0))
-    timer_fill = timer_fill.set_position(lambda t: (-int(W * (t/choice_time)), timer_y) if t < choice_time else (-W, timer_y))
-    timer_fill = timer_fill.set_duration(duration)
+    timer_fill = timer_fill.set_position(
+        lambda t: (-int(W * (t/choice_time)), timer_y) if t < choice_time else (-W, timer_y)
+    ).set_duration(duration)
 
     # 5. Stats Reveal
     reveal_start = duration - 2.0
@@ -236,7 +242,7 @@ def generate_audio(text, filename):
         print("🎤 Generating audio with Kokoro TTS...")
         import kokoro
         
-        # Initialize voice (choose one below)
+        # Initialize voice
         voice = kokoro.KPipeline(
             lang_code="en-us", 
             voice="af_bella"  # Options: af_bella, af_sarah, am_adam, am_michael, bf_emma
@@ -256,7 +262,7 @@ def generate_audio(text, filename):
         subprocess.run([
             'ffmpeg', '-i', temp_wav, 
             '-codec:a', 'libmp3lame', 
-            '-qscale:a', '2',  # High quality
+            '-qscale:a', '2',
             '-y', filename
         ], check=True, capture_output=True, stderr=subprocess.PIPE)
         
@@ -290,7 +296,7 @@ def main():
     
     print(f"✅ LOCKED: {data['option_a']} vs {data['option_b']}")
     
-    # 2. Generate Audio (NOW SYNCHRONOUS - NO ASYNCIO)
+    # 2. Generate Audio
     audio_script = f"Would you rather {data['option_a']}, or {data['option_b']}? Make your choice."
     audio_path = os.path.join(OUTPUT_DIR, "voice.mp3")
     generate_audio(audio_script, audio_path)
@@ -305,6 +311,7 @@ def main():
     # 5. Cleanup
     if os.path.exists(audio_path): 
         os.remove(audio_path)
+    
     # Clean cache to prevent disk bloat
     for f in os.listdir(CACHE_DIR):
         file_path = os.path.join(CACHE_DIR, f)
