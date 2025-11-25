@@ -322,7 +322,9 @@ def render_video(scenario, audio_path, output_file):
 
 # --- MODULE 4: AUDIO GENERATION (FIXED KOKORO) ---
 
-def generate_audio(self, text, filename):
+# --- MODULE 4: AUDIO GENERATION (FIXED KOKORO) ---
+
+def generate_audio(text, filename):  # ✅ REMOVED 'self'
     """
     Generate audio using Kokoro TTS with robust error handling.
     Falls back to gTTS if Kokoro fails.
@@ -431,6 +433,7 @@ def generate_audio(self, text, filename):
         except Exception as gtts_error:
             print(f"❌ Both TTS methods failed!")
             raise gtts_error
+            
 # --- EXECUTION ---
 
 def main():
