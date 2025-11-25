@@ -2,8 +2,8 @@ name: Daily Triple Feature (WYR + Scary + Facts)
 
 on:
   schedule:
-    - cron: '0 10 * * *'  # Runs daily at 10:00 UTC
-  workflow_dispatch:      # Manual Trigger
+    - cron: "0 10 * * *" # Runs daily at 10:00 UTC
+  workflow_dispatch: # Manual Trigger
 
 permissions:
   contents: write
@@ -13,8 +13,8 @@ jobs:
   generate_wyr:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y imagemagick
@@ -33,7 +33,7 @@ jobs:
           git commit -m "Update WYR History" || echo "No changes"
           git push
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: video-wyr
           path: output/wyr_*.mp4
@@ -41,10 +41,10 @@ jobs:
   # --- JOB 2: MYTHICA REPORT (SCARY) ---
   generate_scary:
     runs-on: ubuntu-latest
-    needs: generate_wyr  # WAIT for Job 1 to finish to avoid git conflicts
+    needs: generate_wyr # WAIT for Job 1 to finish to avoid git conflicts
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y imagemagick
@@ -63,7 +63,7 @@ jobs:
           git commit -m "Update Scary History" || echo "No changes"
           git push
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: video-scary
           path: output/scary_*.mp4
@@ -73,8 +73,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: generate_scary # WAIT for Job 2 to finish to avoid git conflicts
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+
       - name: Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y imagemagick
@@ -93,7 +93,7 @@ jobs:
           git commit -m "Update Fact History" || echo "No changes"
           git push
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: video-weird-fact
           path: output/weird_fact_*.mp4
