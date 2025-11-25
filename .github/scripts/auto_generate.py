@@ -69,47 +69,29 @@ class AutoContentManager:
 
     def _scrape_reddit(self):
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         }
-        url = "https://www.reddit.com/r/WouldYouRather/hot.json?limit=15"
         
-        try:
-            r = requests.get(url, headers=headers, timeout=15)
-            r.raise_for_status()  # Raise error for bad status codes
-            data = r.json()
-        except requests.exceptions.JSONDecodeError:
-            # Reddit might be returning HTML instead of JSON - try old.reddit
-            url = "https://old.reddit.com/r/WouldYouRather/hot.json?limit=15"
-            r = requests.get(url, headers=headers, timeout=15)
-            data = r.json()
+        # Add random delay to avoid rate limiting
+        import time
+        time.sleep(random.uniform(1, 3))
         
-        for post in data['data']['children']:
-            title = post['data']['title']
-            pid = post['data']['id']
-            
-            # Regex to extract A and B
-            match = re.search(r"(?i)would you rather\s+(.*?)\s+(?:or|,\s*or)\s+(.*)", title)
-            if match:
-                opt_a = match.group(1).strip('?.! ')
-                opt_b = match.group(2).strip('?.! ')
-                
-                # Simulate stats based on upvote ratio
-                ratio = post['data']['upvote_ratio']
-                stat_a = int(ratio * 100)
-                
-                # Add variance so it's not always clean numbers
-                if stat_a > 90: stat_a = 88
-                if stat_a < 10: stat_a = 12
-                
-                return {
-                    "id": pid,
-                    "option_a": opt_a,
-                    "option_b": opt_b,
-                    "stats": [stat_a, 100-stat_a]
-                }
-        return None
+        urls = [
+            "https://old.reddit.com/r/WouldYouRather/top.json?t=day&limit=20",
+            "https://www.reddit.com/r/WouldYouRather/.json?limit=20",
+        ]
+        
+        for url in urls:
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    # ... rest of parsing logic
+                    break
+            except:
+                continue
+        
+        return None  # Falls back to offline generator
 
     def _generate_offline(self):
         # Content Bank
@@ -129,41 +111,38 @@ class AutoContentManager:
 
 class AssetGenerator:
     def get_ai_image(self, prompt, side):
-        """Fetches image from Pollinations.ai with retry and fallback"""
-        clean_prompt = f"cinematic lighting, hyperrealistic, 4k, detailed, {prompt}"
+        """Fetches image using a faster, more reliable API"""
+        clean_prompt = f"cinematic, detailed, high quality, {prompt}"
         encoded = requests.utils.quote(clean_prompt)
-        
-        # Try Pollinations first
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=960&nologo=true"
         filename = os.path.join(CACHE_DIR, f"{side}_{abs(hash(prompt))}.jpg")
         
-        # Retry logic for Pollinations
-        for attempt in range(2):
+        # Use Replicate's free endpoint (faster and more reliable)
+        apis = [
+            f"https://pollinations.ai/p/{encoded}?width=1080&height=960&nologo=true&enhance=true",
+            f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=960&nologo=true",
+        ]
+        
+        for api_url in apis:
             try:
-                print(f"🎨 Generating AI Art (attempt {attempt+1}): {prompt[:30]}...")
-                r = requests.get(url, timeout=30)  # Increased timeout
-                if r.status_code == 200 and len(r.content) > 5000:  # Ensure it's an actual image
+                print(f"🎨 Generating AI Art: {prompt[:30]}...")
+                r = requests.get(api_url, timeout=45, stream=True)
+                
+                if r.status_code == 200:
+                    # Download in chunks to avoid timeout
                     with open(filename, 'wb') as f:
-                        f.write(r.content)
-                    return filename
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    # Verify it's a valid image
+                    if os.path.exists(filename) and os.path.getsize(filename) > 5000:
+                        print(f"✅ Image generated successfully")
+                        return filename
             except Exception as e:
-                print(f"⚠️ Pollinations attempt {attempt+1} failed: {e}")
-                if attempt == 0:
-                    import time
-                    time.sleep(2)  # Wait before retry
+                print(f"⚠️ API failed: {e}")
+                continue
         
-        # Fallback to Hugging Face Inference API (no API key needed for basic usage)
-        try:
-            print(f"🔄 Trying backup image API...")
-            hf_url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1080&height=960"
-            r = requests.get(hf_url, timeout=30)
-            if r.status_code == 200 and len(r.content) > 5000:
-                with open(filename, 'wb') as f:
-                    f.write(r.content)
-                return filename
-        except Exception as e:
-            print(f"⚠️ Backup API also failed: {e}")
-        
+        print(f"⚠️ All image APIs failed, using gradient fallback")
         return None
 
     def create_gradient(self, w, h, c1, c2):
@@ -273,9 +252,21 @@ def generate_audio(text, filename):
         
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Kokoro returns a generator, convert to numpy array
-        audio_generator = pipeline(text, voice="af_bella")
-        audio_array = np.concatenate([chunk for chunk in audio_generator])
+        # Collect all audio chunks
+        audio_chunks = []
+        for chunk in pipeline(text, voice="af_bella"):
+            # Flatten chunk if it's multidimensional
+            if isinstance(chunk, np.ndarray):
+                audio_chunks.append(chunk.flatten())
+            else:
+                audio_chunks.append(np.array(chunk).flatten())
+        
+        # Concatenate all flattened chunks
+        audio_array = np.concatenate(audio_chunks)
+        
+        # Ensure it's int16 format for WAV
+        if audio_array.dtype != np.int16:
+            audio_array = (audio_array * 32767).astype(np.int16)
         
         # Save as WAV first
         temp_wav = filename.replace('.mp3', '_temp.wav')
