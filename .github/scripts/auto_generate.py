@@ -10,6 +10,15 @@ from PIL import Image
 from moviepy.editor import *
 from moviepy.config import change_settings
 
+# Add this right after your imports, before any other code:
+
+# Fix PIL.Image.ANTIALIAS deprecation for MoviePy compatibility
+from PIL import Image
+if not hasattr(Image, 'ANTIALIAS'):
+    Image.ANTIALIAS = Image.LANCZOS
+if not hasattr(Image, 'BILINEAR'):
+    Image.BILINEAR = Image.LANCZOS
+
 # --- CONFIGURATION & SETUP ---
 
 change_settings({"IMAGEMAGICK_BINARY": "/usr/bin/convert"})
