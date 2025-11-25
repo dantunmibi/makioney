@@ -321,13 +321,8 @@ def render_video(scenario, audio_path, output_file):
     final.write_videofile(output_file, fps=24, codec='libx264', audio_codec='aac', threads=4, preset='fast')
 
 # --- MODULE 4: AUDIO GENERATION (FIXED KOKORO) ---
-
-# --- MODULE 4: AUDIO GENERATION (FIXED KOKORO) ---
 def generate_audio(text, filename):
-    """
-    Generate audio using Kokoro TTS with DEEP nested array handling.
-    Falls back to gTTS if Kokoro fails.
-    """
+    """Generate audio with Kokoro - handle nested sequences."""
     try:
         import kokoro
         import numpy as np
@@ -338,133 +333,73 @@ def generate_audio(text, filename):
         
         print("🎤 Generating audio with Kokoro TTS...")
         
-        # Initialize Kokoro pipeline
-        pipeline = kokoro.KPipeline(
-            lang_code="en-us",
-            repo_id='hexgrad/Kokoro-82M'
-        )
-        
-        # Generate audio
+        pipeline = kokoro.KPipeline(lang_code="en-us", repo_id='hexgrad/Kokoro-82M')
         result = pipeline(text, voice="af_bella")
         
-        # Collect and process chunks with RECURSIVE flattening
-        valid_chunks = []
+        # Convert generator to list immediately
+        chunks_list = list(result)
         
-        def deep_flatten(item):
-            """Recursively flatten nested arrays/tensors."""
-            # Handle torch tensors
-            if isinstance(item, torch.Tensor):
-                return item.detach().cpu().numpy().flatten()
-            
-            # Handle numpy arrays
-            elif isinstance(item, np.ndarray):
-                # If already 1D, return as-is
-                if item.ndim == 1:
-                    return item
-                # If multi-dimensional, flatten
-                else:
-                    return item.flatten()
-            
-            # Handle lists/tuples (nested structures)
-            elif isinstance(item, (list, tuple)):
-                flattened_parts = []
-                for sub_item in item:
-                    sub_flattened = deep_flatten(sub_item)
-                    if sub_flattened is not None and len(sub_flattened) > 0:
-                        flattened_parts.append(sub_flattened)
-                
-                if flattened_parts:
-                    return np.concatenate(flattened_parts)
-                else:
-                    return np.array([])
-            
-            # Handle scalar values
-            elif isinstance(item, (int, float)):
-                return np.array([item], dtype=np.float32)
-            
-            # Unknown type - try converting
-            else:
-                try:
-                    return np.asarray(item, dtype=np.float32).flatten()
-                except:
-                    return np.array([])
+        # NUCLEAR OPTION: Recursively extract all float values
+        all_values = []
         
-        # Process each chunk
-        for idx, chunk in enumerate(result):
-            try:
-                # Deep flatten the chunk
-                chunk_array = deep_flatten(chunk)
-                
-                # Validate
-                if chunk_array.size > 0 and not np.all(np.isnan(chunk_array)):
-                    valid_chunks.append(chunk_array)
-                    print(f"  ✓ Chunk {idx}: {chunk_array.size} samples")
-                else:
-                    print(f"  ⚠️ Chunk {idx}: Empty or NaN")
-                    
-            except Exception as chunk_err:
-                print(f"  ⚠️ Chunk {idx} failed: {str(chunk_err)[:80]}")
-                continue
+        def extract_floats(obj):
+            """Extract all float values from nested structure."""
+            if isinstance(obj, torch.Tensor):
+                all_values.extend(obj.detach().cpu().numpy().flatten().tolist())
+            elif isinstance(obj, np.ndarray):
+                all_values.extend(obj.flatten().tolist())
+            elif isinstance(obj, (list, tuple)):
+                for item in obj:
+                    extract_floats(item)
+            elif isinstance(obj, (int, float)):
+                all_values.append(float(obj))
         
-        # Verify we have audio data
-        if len(valid_chunks) == 0:
-            raise ValueError("No valid audio chunks produced")
+        # Extract from all chunks
+        for chunk in chunks_list:
+            extract_floats(chunk)
         
-        print(f"  ✓ Successfully processed {len(valid_chunks)} chunks")
+        if len(all_values) == 0:
+            raise ValueError("No audio samples extracted")
         
-        # Concatenate all chunks
-        audio_array = np.concatenate(valid_chunks)
+        print(f"  ✓ Extracted {len(all_values)} audio samples")
         
-        # Normalize to [-1, 1]
+        # Convert to numpy array
+        audio_array = np.array(all_values, dtype=np.float32)
+        
+        # Normalize
         max_val = np.abs(audio_array).max()
         if max_val > 0:
             audio_array = audio_array / max_val
         audio_array = np.clip(audio_array, -1.0, 1.0)
         
-        # Convert to 16-bit integer
+        # Convert to 16-bit
         audio_int16 = (audio_array * 32767).astype(np.int16)
         
-        # Save as WAV first
-        wav_temp = filename.replace('.mp3', '_kokoro_temp.wav')
-        sample_rate = 24000  # Kokoro default
-        wavfile.write(wav_temp, sample_rate, audio_int16)
+        # Save WAV
+        wav_temp = filename.replace('.mp3', '_kokoro.wav')
+        wavfile.write(wav_temp, 24000, audio_int16)
         
-        print(f"  ✓ WAV created: {os.path.basename(wav_temp)}")
-        
-        # Convert WAV to MP3 using ffmpeg
-        ffmpeg_result = subprocess.run([
+        # Convert to MP3
+        subprocess.run([
             'ffmpeg', '-y', '-loglevel', 'error',
-            '-i', wav_temp,
-            '-codec:a', 'libmp3lame',
-            '-qscale:a', '2',
-            '-ar', '24000',
-            filename
-        ], capture_output=True, text=True)
+            '-i', wav_temp, '-codec:a', 'libmp3lame',
+            '-qscale:a', '2', filename
+        ], check=True, capture_output=True)
         
-        if ffmpeg_result.returncode != 0:
-            raise Exception(f"FFmpeg failed: {ffmpeg_result.stderr}")
-        
-        # Cleanup temp file
         os.remove(wav_temp)
         
-        print(f"✅ Kokoro audio saved: {os.path.basename(filename)}")
+        print(f"✅ Kokoro audio saved: {filename}")
         return filename
         
-    except Exception as kokoro_error:
-        error_msg = str(kokoro_error)[:150]
-        print(f"⚠️ Kokoro TTS failed: {error_msg}")
-        print("    🔄 Falling back to gTTS...")
+    except Exception as e:
+        print(f"⚠️ Kokoro failed: {str(e)[:100]}")
+        print("    🔄 Using gTTS...")
         
-        # Fallback to gTTS
-        try:
-            from gtts import gTTS
-            tts = gTTS(text=text, lang='en', slow=False)
-            tts.save(filename)
-            print(f"✅ gTTS audio saved: {os.path.basename(filename)}")
-            return filename
-        except Exception as gtts_error:
-            print(f"❌ Both TTS methods failed!")
-            raise gtts_error
+        from gtts import gTTS
+        tts = gTTS(text=text, lang='en', slow=False)
+        tts.save(filename)
+        print(f"✅ gTTS audio saved: {filename}")
+        return filename
             
 # --- EXECUTION ---
 
