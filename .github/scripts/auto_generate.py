@@ -12,10 +12,8 @@ from moviepy.config import change_settings
 
 # --- CONFIGURATION & SETUP ---
 
-# Linux/GitHub Actions ImageMagick Path
 change_settings({"IMAGEMAGICK_BINARY": "/usr/bin/convert"})
 
-# Path Definitions
 BASE_DIR = os.getcwd()
 DATA_DIR = os.path.join(BASE_DIR, "data")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
@@ -23,17 +21,15 @@ CACHE_DIR = os.path.join(OUTPUT_DIR, "cache")
 ASSETS_DIR = os.path.join(BASE_DIR, ".github/assets")
 FONT_PATH = os.path.join(ASSETS_DIR, "fonts/Montserrat-Bold.ttf")
 
-# Font Fallback to prevent crashes
 if not os.path.exists(FONT_PATH):
     print("⚠️ Custom font not found. Using system default.")
     FONT_PATH = "DejaVu-Sans-Bold"
 
-# Ensure Directories Exist
 for d in [DATA_DIR, OUTPUT_DIR, CACHE_DIR]:
     if not os.path.exists(d):
         os.makedirs(d)
 
-# --- MODULE 1: CONTENT ENGINE (Scraper + Backup) ---
+# --- MODULE 1: CONTENT ENGINE ---
 
 class AutoContentManager:
     def __init__(self):
@@ -55,7 +51,6 @@ class AutoContentManager:
             json.dump(self.history, f, indent=2)
 
     def get_content(self):
-        # 1. Try Reddit Scrape
         try:
             print("🌐 Scraping r/WouldYouRather...")
             content = self._scrape_reddit()
@@ -64,12 +59,10 @@ class AutoContentManager:
         except Exception as e:
             print(f"⚠️ Scrape Error: {e}")
 
-        # 2. Fallback Generator
         print("🛡️ Engaging Offline Backup Generator...")
         return self._generate_offline()
 
     def _scrape_reddit(self):
-        # Try Pushshift (Reddit archive - no auth needed)
         try:
             print("🌐 Fetching from Pushshift archive...")
             url = "https://api.pullpush.io/reddit/search/submission"
@@ -97,7 +90,6 @@ class AutoContentManager:
                         opt_a = match.group(1).strip('?.! ')
                         opt_b = match.group(2).strip('?.! ')
                         
-                        # Use score to estimate preference
                         score = post.get('score', 100)
                         stat_a = min(max(int((score % 60) + 20), 25), 75)
                         
@@ -114,7 +106,6 @@ class AutoContentManager:
         return None
 
     def _generate_offline(self):
-        # Content Bank
         verbs = ["Eat", "Fight", "Marry", "Lose", "Live with", "Be trapped with"]
         nouns = ["a T-Rex", "Elon Musk", "a Crying Baby", "your Ex", "a Ghost", "1000 Rats"]
         conditions = ["forever", "in space", "underwater", "every Tuesday", "naked"]
@@ -127,51 +118,118 @@ class AutoContentManager:
         
         return {"id": pid, "option_a": opt_a, "option_b": opt_b, "stats": [s1, 100-s1]}
 
-# --- MODULE 2: VISUAL ASSETS (Pollinations AI + Gradients) ---
+# --- MODULE 2: VISUAL ASSETS ---
 
 class AssetGenerator:
     def get_ai_image(self, prompt, side):
-        """Use faster image API with local generation fallback"""
-        clean_prompt = f"high quality, detailed, {prompt}"
-        encoded = requests.utils.quote(clean_prompt)
+        """Multi-provider image generation with smart fallbacks"""
         filename = os.path.join(CACHE_DIR, f"{side}_{abs(hash(prompt))}.jpg")
+        width, height = 1080, 960
         
-        # Try fast APIs in order
-        apis = [
-            # Hugging Face Inference (usually faster)
-            f"https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell",
-            # Pollinations with shorter prompt
-            f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=960&nologo=true&seed={random.randint(1,9999)}",
+        topic_keywords = prompt.lower()
+        if "fight" in topic_keywords or "battle" in topic_keywords:
+            topic = "action"
+        elif "eat" in topic_keywords or "food" in topic_keywords:
+            topic = "food"
+        elif "space" in topic_keywords or "universe" in topic_keywords:
+            topic = "space"
+        elif "underwater" in topic_keywords or "ocean" in topic_keywords or "water" in topic_keywords:
+            topic = "nature"
+        elif "ghost" in topic_keywords or "scary" in topic_keywords:
+            topic = "abstract"
+        else:
+            topic = "people"
+        
+        providers = [
+            ("Pollinations", lambda: self._generate_pollinations(prompt, filename, width, height)),
+            ("Unsplash", lambda: self._generate_unsplash(topic, filename, width, height)),
+            ("Pexels", lambda: self._generate_pexels(topic, filename, width, height)),
+            ("Picsum", lambda: self._generate_picsum(filename, width, height))
         ]
         
-        for idx, api_url in enumerate(apis):
+        for provider_name, provider_func in providers:
             try:
-                print(f"🎨 Generating image (API {idx+1})...")
-                
-                if idx == 0:  # Hugging Face
-                    response = requests.post(
-                        api_url,
-                        headers={"Content-Type": "application/json"},
-                        json={"inputs": clean_prompt},
-                        timeout=20
-                    )
-                else:  # Pollinations
-                    response = requests.get(api_url, timeout=20, stream=True)
-                
-                if response.status_code == 200 and len(response.content) > 5000:
-                    with open(filename, 'wb') as f:
-                        f.write(response.content)
-                    print(f"✅ Image generated")
-                    return filename
-                    
+                print(f"🎨 Trying {provider_name}: {prompt[:30]}...")
+                result = provider_func()
+                if result and os.path.exists(result) and os.path.getsize(result) > 5000:
+                    print(f"✅ {provider_name} succeeded")
+                    return result
             except Exception as e:
-                print(f"⚠️ API {idx+1} failed: {str(e)[:50]}")
+                print(f"⚠️ {provider_name} failed: {str(e)[:50]}")
                 continue
         
-        print(f"⚠️ All APIs failed, using gradient")
+        print("⚠️ All providers failed, using gradient")
         return None
+    
+    def _generate_pollinations(self, prompt, filename, width, height):
+        negative = "blurry,low quality,watermark,text,logo,ui,overlay,frame,border"
+        formatted = f"{prompt}, cinematic, detailed, vibrant, no text, no logos, clean image"
+        seed = random.randint(1, 999999)
+        
+        url = (
+            f"https://image.pollinations.ai/prompt/{requests.utils.quote(formatted)}"
+            f"?width={width}&height={height}"
+            f"&negative={requests.utils.quote(negative)}"
+            f"&nologo=true&enhance=true&seed={seed}"
+        )
+        
+        r = requests.get(url, timeout=20)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_unsplash(self, topic, filename, width, height):
+        seed = random.randint(1, 9999)
+        url = f"https://source.unsplash.com/{width}x{height}/?{topic}&sig={seed}"
+        
+        r = requests.get(url, timeout=15, allow_redirects=True)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_pexels(self, topic, filename, width, height):
+        photo_ids = {
+            "action": [2045531, 6153896, 8386440, 1181244, 4974912, 3861959],
+            "food": [1640777, 1410235, 2097090, 262959, 3338496, 3764640],
+            "space": [2387873, 59989, 132037, 145035, 210186, 62415],
+            "nature": [34950, 3222684, 2014422, 590041, 15286, 36717],
+            "people": [3184395, 3184325, 1671643, 1181671, 1222271, 1546906],
+            "abstract": [3222684, 267614, 1402787, 8386440, 210186, 356056]
+        }
+        
+        ids = photo_ids.get(topic, photo_ids["abstract"])
+        photo_id = random.choice(ids)
+        seed = random.randint(1000, 9999)
+        
+        url = f"https://images.pexels.com/photos/{photo_id}/pexels-photo-{photo_id}.jpeg?auto=compress&cs=tinysrgb&w={width}&h={height}&random={seed}"
+        
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            
+            img = Image.open(filename).convert("RGB")
+            img = img.resize((width, height), Image.LANCZOS)
+            img.save(filename, quality=95)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_picsum(self, filename, width, height):
+        seed = random.randint(1, 1000)
+        url = f"https://picsum.photos/{width}/{height}?random={seed}"
+        
+        r = requests.get(url, timeout=15, allow_redirects=True)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+
     def create_gradient(self, w, h, c1, c2):
-        """NumPy Gradient Generator"""
         r1, g1, b1 = c1
         r2, g2, b2 = c2
         r = np.tile(np.linspace(r1, r2, h).reshape(h, 1), (1, w))
@@ -186,12 +244,10 @@ def render_video(scenario, audio_path, output_file):
     print(f"🎬 Rendering: {scenario['option_a']} vs {scenario['option_b']}")
     assets = AssetGenerator()
     
-    # Audio Setup
     audio_clip = AudioFileClip(audio_path)
     duration = audio_clip.duration + 5.0
     W, H = 1080, 1920
 
-    # 1. Background Layer (AI Image OR Gradient)
     def get_bg(text, side, fallback_colors, pos):
         img_path = assets.get_ai_image(text, side)
         if img_path and os.path.exists(img_path):
@@ -205,7 +261,6 @@ def render_video(scenario, audio_path, output_file):
     bg_top = get_bg(scenario['option_a'], "top", [(200, 40, 40), (100, 20, 20)], ('center', 'top'))
     bg_btm = get_bg(scenario['option_b'], "btm", [(40, 80, 200), (20, 40, 100)], ('center', 'bottom'))
 
-    # 2. Text Helpers (Shadow + Main)
     def make_text(txt, size, pos, start=0):
         s = TextClip(txt, font=FONT_PATH, fontsize=size, color='black', 
                      method='caption', size=(900, None), align='center')
@@ -222,7 +277,6 @@ def render_video(scenario, audio_path, output_file):
         m = m.set_position(pos).set_start(start).set_duration(duration-start)
         return s, m
 
-    # 3. UI Elements
     head_s, head_m = make_text("WOULD YOU RATHER?", 80, ('center', 130))
     opt_a_s, opt_a_m = make_text(scenario['option_a'], 70, ('center', 450))
     opt_b_s, opt_b_m = make_text(scenario['option_b'], 70, ('center', 1400))
@@ -230,7 +284,6 @@ def render_video(scenario, audio_path, output_file):
     vs_box = ColorClip(size=(220, 160), color=(20,20,20)).set_position('center').set_duration(duration)
     vs_txt = TextClip("VS", font=FONT_PATH, fontsize=85, color='white').set_position('center').set_duration(duration)
 
-    # 4. Countdown Timer (Yellow Bar)
     timer_y = H // 2 + 80
     timer_bg = ColorClip(size=(W, 20), color=(50,50,50)).set_position(('center', timer_y)).set_duration(duration)
     
@@ -240,12 +293,10 @@ def render_video(scenario, audio_path, output_file):
         lambda t: (-int(W * (t/choice_time)), timer_y) if t < choice_time else (-W, timer_y)
     ).set_duration(duration)
 
-    # 5. Stats Reveal
     reveal_start = duration - 2.0
     stat_a_s, stat_a_m = make_text(f"{scenario['stats'][0]}%", 140, ('center', 700), start=reveal_start)
     stat_b_s, stat_b_m = make_text(f"{scenario['stats'][1]}%", 140, ('center', 1650), start=reveal_start)
 
-    # 6. Final Composite
     final = CompositeVideoClip([
         bg_top, bg_btm,
         head_s, head_m,
@@ -260,57 +311,134 @@ def render_video(scenario, audio_path, output_file):
     final = final.set_audio(audio_clip)
     final.write_videofile(output_file, fps=24, codec='libx264', audio_codec='aac', threads=4, preset='fast')
 
-# --- MODULE 4: AUDIO GENERATION (Kokoro TTS) ---
+# --- MODULE 4: AUDIO GENERATION (FIXED KOKORO) ---
 
 def generate_audio(text, filename):
+    """
+    Generate audio with Kokoro TTS (November 2025 implementation)
+    Uses streaming iterator pattern with proper dtype handling
+    """
     try:
         print("🎤 Generating audio with Kokoro TTS...")
         import kokoro
         import numpy as np
         
-        pipeline = kokoro.KPipeline(lang_code="en-us")
+        # Initialize pipeline
+        tts = kokoro.KPipeline(lang_code="en-us")
         
-        # Get the generator
-        result = pipeline(text, voice="af_bella")
+        # Generate audio with proper streaming handling
+        audio_stream = tts(text, voice="af_bella", speed=1.0)
         
-        # Convert generator to list of chunks
-        chunks = []
-        for chunk in result:
-            if hasattr(chunk, 'numpy'):  # If it's a tensor
-                chunks.append(chunk.numpy().flatten())
-            elif isinstance(chunk, np.ndarray):
-                chunks.append(chunk.flatten())
+        # Collect audio chunks properly
+        audio_chunks = []
+        chunk_count = 0
+        
+        for chunk in audio_stream:
+            chunk_count += 1
+            
+            # Handle different chunk types
+            if isinstance(chunk, np.ndarray):
+                audio_data = chunk
+            elif hasattr(chunk, 'numpy'):
+                audio_data = chunk.numpy()
+            elif hasattr(chunk, '__array__'):
+                audio_data = np.asarray(chunk)
             else:
-                chunks.append(np.array(chunk, dtype=np.float32).flatten())
+                audio_data = np.array(chunk, dtype=np.float32)
+            
+            # Ensure 1D array
+            if audio_data.ndim > 1:
+                audio_data = audio_data.flatten()
+            
+            # Ensure float32 dtype
+            if audio_data.dtype != np.float32:
+                audio_data = audio_data.astype(np.float32)
+            
+            audio_chunks.append(audio_data)
         
-        # Concatenate all flattened chunks
-        audio_array = np.concatenate(chunks)
+        if not audio_chunks:
+            raise ValueError("No audio chunks generated")
         
-        # Convert to int16
+        print(f"    📦 Collected {chunk_count} audio chunks")
+        
+        # Concatenate all chunks
+        audio_array = np.concatenate(audio_chunks, axis=0)
+        
+        # Normalize to [-1, 1] range if needed
+        max_val = np.abs(audio_array).max()
+        if max_val > 1.0:
+            audio_array = audio_array / max_val
+        
+        # Convert to int16 for WAV
         audio_array = np.clip(audio_array, -1.0, 1.0)
-        audio_array = (audio_array * 32767).astype(np.int16)
+        audio_int16 = (audio_array * 32767).astype(np.int16)
         
-        # Save
+        # Save as WAV
+        import scipy.io.wavfile as wavfile
         temp_wav = filename.replace('.mp3', '_temp.wav')
-        import scipy.io.wavfile as wav
-        wav.write(temp_wav, 24000, audio_array)
         
-        subprocess.run([
-            'ffmpeg', '-i', temp_wav, '-codec:a', 'libmp3lame', 
-            '-qscale:a', '2', '-y', filename
-        ], check=True, capture_output=True)
+        sample_rate = 24000
+        wavfile.write(temp_wav, sample_rate, audio_int16)
         
+        print(f"    💾 Saved WAV: {len(audio_int16)} samples at {sample_rate}Hz")
+        
+        # Convert to MP3 using ffmpeg
+        result = subprocess.run([
+            'ffmpeg', '-y',
+            '-i', temp_wav,
+            '-codec:a', 'libmp3lame',
+            '-qscale:a', '2',
+            '-ar', '24000',
+            filename
+        ], 
+        capture_output=True, 
+        stderr=subprocess.PIPE,
+        timeout=30
+        )
+        
+        if result.returncode != 0:
+            raise Exception(f"FFmpeg failed: {result.stderr.decode()[:100]}")
+        
+        # Cleanup
         if os.path.exists(temp_wav):
             os.remove(temp_wav)
         
-        print(f"✅ Kokoro audio saved")
+        print(f"✅ Kokoro audio saved: {filename}")
+        return True
         
     except Exception as e:
-        print(f"⚠️ Kokoro failed ({e}), using gTTS...")
-        from gtts import gTTS
-        tts = gTTS(text=text, lang='en', slow=False, tld='com')
-        tts.save(filename)
-        print(f"✅ gTTS audio saved")
+        print(f"⚠️ Kokoro TTS failed: {str(e)[:150]}")
+        print(f"    🔄 Falling back to gTTS...")
+        
+        try:
+            from gtts import gTTS
+            tts = gTTS(text=text, lang='en', slow=False, tld='com')
+            tts.save(filename)
+            print(f"✅ gTTS audio saved: {filename}")
+            return True
+        except Exception as gtts_error:
+            print(f"❌ gTTS also failed: {gtts_error}")
+            
+            # Last resort: silent audio
+            import numpy as np
+            import scipy.io.wavfile as wavfile
+            
+            silent = np.zeros(int(24000 * 5), dtype=np.int16)
+            temp_wav = filename.replace('.mp3', '_silent.wav')
+            wavfile.write(temp_wav, 24000, silent)
+            
+            subprocess.run([
+                'ffmpeg', '-y', '-i', temp_wav,
+                '-codec:a', 'libmp3lame', '-qscale:a', '2',
+                filename
+            ], capture_output=True)
+            
+            if os.path.exists(temp_wav):
+                os.remove(temp_wav)
+            
+            print(f"⚠️ Created silent fallback audio")
+            return False
+
 # --- EXECUTION ---
 
 def main():

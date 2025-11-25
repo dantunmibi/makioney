@@ -5,6 +5,7 @@ import requests
 import subprocess
 import time
 import numpy as np
+from PIL import Image
 from moviepy.editor import *
 from moviepy.config import change_settings
 
@@ -23,7 +24,8 @@ if not os.path.exists(FONT_PATH):
 for d in [DATA_DIR, OUTPUT_DIR, CACHE_DIR]: 
     os.makedirs(d, exist_ok=True)
 
-# --- MODULE 1: CONTENT (r/TwoSentenceHorror) ---
+# --- MODULE 1: CONTENT ---
+
 class HorrorContentManager:
     def __init__(self):
         self.history_file = os.path.join(DATA_DIR, "scary_history.json")
@@ -45,121 +47,213 @@ class HorrorContentManager:
     def get_content(self):
         try:
             print("👻 Scraping r/TwoSentenceHorror...")
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            
+            url = "https://api.pullpush.io/reddit/search/submission"
+            params = {
+                'subreddit': 'TwoSentenceHorror',
+                'sort': 'desc',
+                'sort_type': 'score',
+                'size': 25,
+                'fields': 'id,title,selftext,over_18'
             }
             
-            time.sleep(random.uniform(1, 3))
-            
-            urls = [
-                "https://old.reddit.com/r/TwoSentenceHorror/top.json?t=day&limit=20",
-                "https://www.reddit.com/r/TwoSentenceHorror/.json?limit=20",
-            ]
-            
-            for url in urls:
-                try:
-                    r = requests.get(url, headers=headers, timeout=10)
-                    if r.status_code == 200:
-                        data = r.json()
-                        
-                        for post in data['data']['children']:
-                            p = post['data']
-                            if p['id'] not in self.history and not p['over_18']:
-                                return {
-                                    "id": p['id'],
-                                    "setup": p['title'],
-                                    "punchline": p['selftext']
-                                }
-                        break
-                except Exception as e:
-                    print(f"⚠️ URL {url} failed: {e}")
-                    continue
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                
+                for post in data.get('data', []):
+                    pid = post.get('id', '')
+                    over_18 = post.get('over_18', False)
+                    
+                    if pid in self.history or over_18:
+                        continue
+                    
+                    setup = post.get('title', '')
+                    punchline = post.get('selftext', '')
+                    
+                    if setup and punchline:
+                        print(f"✅ Found from Pushshift: {setup[:50]}...")
+                        return {
+                            "id": pid,
+                            "setup": setup,
+                            "punchline": punchline
+                        }
         except Exception as e:
             print(f"⚠️ Scrape failed: {e}")
         
+        backups = [
+            ("I heard my mom calling me into the kitchen.", "As I ran down the hall, she whispered from the closet, 'Don't go, I heard it too.'"),
+            ("I woke up to hear knocking on glass.", "At first, I thought it was the window until I heard it come from the mirror again."),
+            ("The last man on Earth sat alone in a room.", "There was a knock on the door."),
+            ("My daughter won't stop crying and screaming in the middle of the night.", "I visit her grave and ask her to stop, but it doesn't help."),
+        ]
+        
+        setup, punchline = random.choice(backups)
         return {
             "id": f"backup_{random.randint(1000,9999)}",
-            "setup": "I heard my mom calling me into the kitchen.",
-            "punchline": "As I ran down the hall, she whispered from the closet, 'Don't go, I heard it too.'"
+            "setup": setup,
+            "punchline": punchline
         }
 
 # --- MODULE 2: SCARY VISUALS ---
+
 class HorrorAssetGen:
     def get_creepy_image(self, prompt):
-        horror_prompt = f"horror photography, grainy, vintage, dark atmosphere, scary, {prompt}"
-        encoded = requests.utils.quote(horror_prompt)
         filename = os.path.join(CACHE_DIR, f"scary_{abs(hash(prompt))}.jpg")
+        width, height = 1080, 1920
         
-        apis = [
-            f"https://pollinations.ai/p/{encoded}?width=1080&height=1920&nologo=true&enhance=true",
-            f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1920&nologo=true",
+        topic = "abstract"
+        
+        providers = [
+            ("Pollinations", lambda: self._generate_pollinations(prompt, filename, width, height)),
+            ("Unsplash", lambda: self._generate_unsplash(topic, filename, width, height)),
+            ("Pexels", lambda: self._generate_pexels(topic, filename, width, height)),
+            ("Picsum", lambda: self._generate_picsum(filename, width, height))
         ]
         
-        for api_url in apis:
+        for provider_name, provider_func in providers:
             try:
-                print(f"🎨 Generating Horror Art: {prompt[:20]}...")
-                r = requests.get(api_url, timeout=45, stream=True)
-                
-                if r.status_code == 200:
-                    with open(filename, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                    
-                    if os.path.exists(filename) and os.path.getsize(filename) > 5000:
-                        print(f"✅ Horror image generated")
-                        return filename
+                print(f"🎨 Trying {provider_name} for horror image...")
+                result = provider_func()
+                if result and os.path.exists(result) and os.path.getsize(result) > 5000:
+                    print(f"✅ {provider_name} succeeded")
+                    return result
             except Exception as e:
-                print(f"⚠️ API failed: {e}")
+                print(f"⚠️ {provider_name} failed: {str(e)[:50]}")
                 continue
         
+        print("⚠️ All providers failed, returning None for dark background")
         return None
+    
+    def _generate_pollinations(self, prompt, filename, width, height):
+        horror_prompt = f"dark horror atmosphere, creepy, unsettling, grainy, vintage horror, {prompt}"
+        negative = "bright,colorful,happy,cheerful,cartoon,text,logo,watermark"
+        seed = random.randint(1, 999999)
+        
+        url = (
+            f"https://image.pollinations.ai/prompt/{requests.utils.quote(horror_prompt)}"
+            f"?width={width}&height={height}"
+            f"&negative={requests.utils.quote(negative)}"
+            f"&nologo=true&seed={seed}"
+        )
+        
+        r = requests.get(url, timeout=20)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_unsplash(self, topic, filename, width, height):
+        seed = random.randint(1, 9999)
+        url = f"https://source.unsplash.com/{width}x{height}/?dark,horror&sig={seed}"
+        
+        r = requests.get(url, timeout=15, allow_redirects=True)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_pexels(self, topic, filename, width, height):
+        photo_ids = [3222684, 267614, 1402787, 8386440, 210186, 356056]
+        photo_id = random.choice(photo_ids)
+        seed = random.randint(1000, 9999)
+        
+        url = f"https://images.pexels.com/photos/{photo_id}/pexels-photo-{photo_id}.jpeg?auto=compress&cs=tinysrgb&w={width}&h={height}&random={seed}"
+        
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            
+            img = Image.open(filename).convert("RGB")
+            img = img.resize((width, height), Image.LANCZOS)
+            img.save(filename, quality=95)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_picsum(self, filename, width, height):
+        seed = random.randint(1, 1000)
+        url = f"https://picsum.photos/{width}/{height}?random={seed}&grayscale"
+        
+        r = requests.get(url, timeout=15, allow_redirects=True)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
 
-# --- MODULE 3: AUDIO ---
+# --- MODULE 3: AUDIO (FIXED KOKORO) ---
+
 def generate_scary_voice(text, filename):
+    """
+    Generate creepy voice with pitch shifting
+    """
     try:
         print("🎤 Generating scary voice with Kokoro...")
         import kokoro
         import numpy as np
         
-        pipeline = kokoro.KPipeline(lang_code="en-us")
+        tts = kokoro.KPipeline(lang_code="en-us")
+        audio_stream = tts(text, voice="am_adam", speed=0.95)
         
         audio_chunks = []
-        for chunk in pipeline(text, voice="am_adam"):
+        for chunk in audio_stream:
             if isinstance(chunk, np.ndarray):
-                audio_chunks.append(chunk.flatten())
+                audio_data = chunk
+            elif hasattr(chunk, 'numpy'):
+                audio_data = chunk.numpy()
+            elif hasattr(chunk, '__array__'):
+                audio_data = np.asarray(chunk)
             else:
-                audio_chunks.append(np.array(chunk).flatten())
+                audio_data = np.array(chunk, dtype=np.float32)
+            
+            if audio_data.ndim > 1:
+                audio_data = audio_data.flatten()
+            if audio_data.dtype != np.float32:
+                audio_data = audio_data.astype(np.float32)
+            
+            audio_chunks.append(audio_data)
         
-        audio_array = np.concatenate(audio_chunks)
+        if not audio_chunks:
+            raise ValueError("No audio generated")
         
-        if audio_array.dtype != np.int16:
-            audio_array = (audio_array * 32767).astype(np.int16)
+        audio_array = np.concatenate(audio_chunks, axis=0)
         
-        import scipy.io.wavfile as wav
+        max_val = np.abs(audio_array).max()
+        if max_val > 1.0:
+            audio_array = audio_array / max_val
+        
+        audio_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+        
+        import scipy.io.wavfile as wavfile
         temp_wav = filename.replace('.mp3', '_temp.wav')
-        wav.write(temp_wav, 24000, audio_array)
+        wavfile.write(temp_wav, 24000, audio_int16)
         
         subprocess.run([
-            'ffmpeg', '-i', temp_wav,
-            '-af', 'asetrate=24000*0.9,atempo=1.11,aresample=24000',
+            'ffmpeg', '-y', '-i', temp_wav,
+            '-af', 'asetrate=24000*0.92,atempo=1.087,aresample=24000,volume=1.2',
             '-codec:a', 'libmp3lame', '-qscale:a', '2',
-            '-y', filename
-        ], check=True, capture_output=True, stderr=subprocess.PIPE)
+            filename
+        ], capture_output=True, timeout=30)
         
-        if os.path.exists(temp_wav): 
+        if os.path.exists(temp_wav):
             os.remove(temp_wav)
         
-        print(f"✅ Scary audio generated")
+        print(f"✅ Scary Kokoro voice generated")
+        return True
         
     except Exception as e:
-        print(f"⚠️ Kokoro failed ({e}), using gTTS...")
+        print(f"⚠️ Kokoro failed: {str(e)[:100]}, using gTTS...")
         from gtts import gTTS
-        tts = gTTS(text=text, lang='en', slow=True)
+        tts = gTTS(text=text, lang='en', slow=True, tld='com')
         tts.save(filename)
-        print(f"✅ Audio saved with gTTS")
+        print(f"✅ gTTS fallback used")
+        return True
 
-# --- MODULE 4: RENDER ENGINE ---
+# --- MODULE 4: RENDER ---
+
 def render_scary_video(data, audio_path, output_file):
     assets = HorrorAssetGen()
     
@@ -188,6 +282,7 @@ def render_scary_video(data, audio_path, output_file):
     final.write_videofile(output_file, fps=24, codec='libx264', audio_codec='aac', threads=4, preset='fast')
 
 # --- MAIN ---
+
 def main():
     mgr = HorrorContentManager()
     data = mgr.get_content()

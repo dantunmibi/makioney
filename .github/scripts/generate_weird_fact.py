@@ -5,6 +5,8 @@ import re
 import requests
 import subprocess
 import time
+import numpy as np
+from PIL import Image
 from moviepy.editor import *
 from moviepy.config import change_settings
 
@@ -22,7 +24,8 @@ if not os.path.exists(FONT_PATH):
 for d in [DATA_DIR, OUTPUT_DIR, CACHE_DIR]: 
     os.makedirs(d, exist_ok=True)
 
-# --- MODULE 1: FACT MINER (r/todayilearned) ---
+# --- MODULE 1: FACT MINER ---
+
 class FactManager:
     def __init__(self):
         self.history_file = os.path.join(DATA_DIR, "weird_facts_history.json")
@@ -48,34 +51,35 @@ class FactManager:
     def get_content(self):
         try:
             print("🧠 Mining r/todayilearned for weird facts...")
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            
+            url = "https://api.pullpush.io/reddit/search/submission"
+            params = {
+                'subreddit': 'todayilearned',
+                'sort': 'desc',
+                'sort_type': 'score',
+                'size': 30,
+                'fields': 'id,title,over_18'
             }
             
-            time.sleep(random.uniform(1, 3))
-            
-            urls = [
-                "https://old.reddit.com/r/todayilearned/top.json?t=day&limit=25",
-                "https://www.reddit.com/r/todayilearned/.json?limit=25",
-            ]
-            
-            for url in urls:
-                try:
-                    r = requests.get(url, headers=headers, timeout=10)
-                    if r.status_code == 200:
-                        data = r.json()
-                        
-                        for post in data['data']['children']:
-                            p = post['data']
-                            if p['id'] not in self.history and not p['over_18'] and len(p['title']) < 200:
-                                return {
-                                    "id": p['id'],
-                                    "text": self.clean_text(p['title'])
-                                }
-                        break
-                except Exception as e:
-                    print(f"⚠️ URL {url} failed: {e}")
-                    continue
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                
+                for post in data.get('data', []):
+                    pid = post.get('id', '')
+                    title = post.get('title', '')
+                    over_18 = post.get('over_18', False)
+                    
+                    if pid in self.history or over_18 or len(title) > 200:
+                        continue
+                    
+                    cleaned = self.clean_text(title)
+                    if cleaned:
+                        print(f"✅ Found from Pushshift: {cleaned[:50]}...")
+                        return {
+                            "id": pid,
+                            "text": cleaned
+                        }
         except Exception as e:
             print(f"⚠️ Scrape failed: {e}")
         
@@ -83,45 +87,127 @@ class FactManager:
             ("b_01", "Wombat poop is cube-shaped to stop it from rolling away."),
             ("b_02", "Honey never spoils. You can eat 3000-year-old honey."),
             ("b_03", "Oxford University is older than the Aztec Empire."),
-            ("b_04", "Nintendo was founded in 1889 and originally made playing cards.")
+            ("b_04", "Nintendo was founded in 1889 and originally made playing cards."),
+            ("b_05", "A group of flamingos is called a 'flamboyance'."),
+            ("b_06", "Octopuses have three hearts and blue blood."),
+            ("b_07", "Bananas are berries, but strawberries aren't."),
+            ("b_08", "There are more possible iterations of a chess game than atoms in the known universe."),
         ]
         sel = random.choice(backups)
         return {"id": sel[0], "text": sel[1]}
 
 # --- MODULE 2: ASSET GENERATOR ---
+
 class AssetGen:
     def get_fact_image(self, text):
-        prompt = f"documentary photography, national geographic style, 4k, {text[:50]}"
-        encoded = requests.utils.quote(prompt)
         filename = os.path.join(CACHE_DIR, f"fact_{abs(hash(text))}.jpg")
+        width, height = 1080, 1920
         
-        apis = [
-            f"https://pollinations.ai/p/{encoded}?width=1080&height=1920&nologo=true&enhance=true",
-            f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1920&nologo=true",
+        text_lower = text.lower()
+        if any(word in text_lower for word in ["animal", "wombat", "octopus", "flamingo"]):
+            topic = "nature"
+        elif any(word in text_lower for word in ["food", "honey", "banana"]):
+            topic = "food"
+        elif any(word in text_lower for word in ["university", "history", "oxford", "aztec"]):
+            topic = "abstract"
+        elif any(word in text_lower for word in ["nintendo", "chess", "game"]):
+            topic = "technology"
+        else:
+            topic = "abstract"
+        
+        providers = [
+            ("Pollinations", lambda: self._generate_pollinations(text, filename, width, height)),
+            ("Unsplash", lambda: self._generate_unsplash(topic, filename, width, height)),
+            ("Pexels", lambda: self._generate_pexels(topic, filename, width, height)),
+            ("Picsum", lambda: self._generate_picsum(filename, width, height))
         ]
         
-        for api_url in apis:
+        for provider_name, provider_func in providers:
             try:
-                print(f"🎨 Generating Fact Image...")
-                r = requests.get(api_url, timeout=45, stream=True)
-                
-                if r.status_code == 200:
-                    with open(filename, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                    
-                    if os.path.exists(filename) and os.path.getsize(filename) > 5000:
-                        print(f"✅ Fact image generated")
-                        return filename
+                print(f"🎨 Trying {provider_name} for fact image...")
+                result = provider_func()
+                if result and os.path.exists(result) and os.path.getsize(result) > 5000:
+                    print(f"✅ {provider_name} succeeded")
+                    return result
             except Exception as e:
-                print(f"⚠️ API failed: {e}")
+                print(f"⚠️ {provider_name} failed: {str(e)[:50]}")
                 continue
         
+        print("⚠️ All providers failed, returning None for colored background")
         return None
+    
+    def _generate_pollinations(self, text, filename, width, height):
+        prompt = f"educational illustration, documentary style, professional, {text[:50]}"
+        negative = "text,logo,watermark,ui,overlay"
+        seed = random.randint(1, 999999)
+        
+        url = (
+            f"https://image.pollinations.ai/prompt/{requests.utils.quote(prompt)}"
+            f"?width={width}&height={height}"
+            f"&negative={requests.utils.quote(negative)}"
+            f"&nologo=true&enhance=true&seed={seed}"
+        )
+        
+        r = requests.get(url, timeout=20)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_unsplash(self, topic, filename, width, height):
+        seed = random.randint(1, 9999)
+        url = f"https://source.unsplash.com/{width}x{height}/?{topic},education&sig={seed}"
+        
+        r = requests.get(url, timeout=15, allow_redirects=True)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_pexels(self, topic, filename, width, height):
+        photo_ids = {
+            "nature": [34950, 3222684, 2014422, 590041, 15286, 36717],
+            "food": [1640777, 1410235, 2097090, 262959, 3338496, 3764640],
+            "technology": [2045531, 6153896, 8386440, 1181244, 4974912, 3861959],
+            "abstract": [3222684, 267614, 1402787, 8386440, 210186, 356056]
+        }
+        
+        ids = photo_ids.get(topic, photo_ids["abstract"])
+        photo_id = random.choice(ids)
+        seed = random.randint(1000, 9999)
+        
+        url = f"https://images.pexels.com/photos/{photo_id}/pexels-photo-{photo_id}.jpeg?auto=compress&cs=tinysrgb&w={width}&h={height}&random={seed}"
+        
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            
+            img = Image.open(filename).convert("RGB")
+            img = img.resize((width, height), Image.LANCZOS)
+            img.save(filename, quality=95)
+            return filename
+        raise Exception(f"Status {r.status_code}")
+    
+    def _generate_picsum(self, filename, width, height):
+        seed = random.randint(1, 1000)
+        url = f"https://picsum.photos/{width}/{height}?random={seed}"
+        
+        r = requests.get(url, timeout=15, allow_redirects=True)
+        if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+            return filename
+        raise Exception(f"Status {r.status_code}")
 
-# --- MODULE 3: AUDIO ---
+# --- MODULE 3: AUDIO (FIXED KOKORO) ---
+
 def generate_voice(text, filename):
+    """
+    Generate energetic voice for facts
+    """
     try:
         print("🎤 Generating voice with Kokoro...")
         import kokoro
@@ -129,44 +215,66 @@ def generate_voice(text, filename):
         
         script = f"Here is a fact that sounds fake, but is actually true. {text}"
         
-        pipeline = kokoro.KPipeline(lang_code="en-us")
+        tts = kokoro.KPipeline(lang_code="en-us")
+        audio_stream = tts(script, voice="af_sarah", speed=1.05)
         
         audio_chunks = []
-        for chunk in pipeline(script, voice="af_sarah"):
+        for chunk in audio_stream:
             if isinstance(chunk, np.ndarray):
-                audio_chunks.append(chunk.flatten())
+                audio_data = chunk
+            elif hasattr(chunk, 'numpy'):
+                audio_data = chunk.numpy()
+            elif hasattr(chunk, '__array__'):
+                audio_data = np.asarray(chunk)
             else:
-                audio_chunks.append(np.array(chunk).flatten())
+                audio_data = np.array(chunk, dtype=np.float32)
+            
+            if audio_data.ndim > 1:
+                audio_data = audio_data.flatten()
+            if audio_data.dtype != np.float32:
+                audio_data = audio_data.astype(np.float32)
+            
+            audio_chunks.append(audio_data)
         
-        audio_array = np.concatenate(audio_chunks)
+        if not audio_chunks:
+            raise ValueError("No audio generated")
         
-        if audio_array.dtype != np.int16:
-            audio_array = (audio_array * 32767).astype(np.int16)
+        audio_array = np.concatenate(audio_chunks, axis=0)
         
-        import scipy.io.wavfile as wav
+        max_val = np.abs(audio_array).max()
+        if max_val > 1.0:
+            audio_array = audio_array / max_val
+        
+        audio_int16 = (np.clip(audio_array, -1.0, 1.0) * 32767).astype(np.int16)
+        
+        import scipy.io.wavfile as wavfile
         temp_wav = filename.replace('.mp3', '_temp.wav')
-        wav.write(temp_wav, 24000, audio_array)
+        wavfile.write(temp_wav, 24000, audio_int16)
         
         subprocess.run([
-            'ffmpeg', '-i', temp_wav,
+            'ffmpeg', '-y', '-i', temp_wav,
             '-codec:a', 'libmp3lame', '-qscale:a', '2',
-            '-y', filename
-        ], check=True, capture_output=True, stderr=subprocess.PIPE)
+            '-ar', '24000',
+            filename
+        ], capture_output=True, timeout=30)
         
-        if os.path.exists(temp_wav): 
+        if os.path.exists(temp_wav):
             os.remove(temp_wav)
         
-        print(f"✅ Audio saved")
-            
+        print(f"✅ Kokoro voice generated")
+        return True
+        
     except Exception as e:
-        print(f"⚠️ Kokoro failed ({e}), using gTTS...")
+        print(f"⚠️ Kokoro failed: {str(e)[:100]}, using gTTS...")
         from gtts import gTTS
         script = f"Here is a fact that sounds fake, but is actually true. {text}"
-        tts = gTTS(text=script, lang='en', slow=False)
+        tts = gTTS(text=script, lang='en', slow=False, tld='com')
         tts.save(filename)
-        print(f"✅ Audio saved with gTTS")
+        print(f"✅ gTTS fallback used")
+        return True
 
-# --- MODULE 4: RENDER ENGINE ---
+# --- MODULE 4: RENDER ---
+
 def render_fact_video(data, audio_path, output_file):
     assets = AssetGen()
     
@@ -204,6 +312,7 @@ def render_fact_video(data, audio_path, output_file):
     final.write_videofile(output_file, fps=24, codec='libx264', audio_codec='aac', threads=4, preset='fast')
 
 # --- MAIN ---
+
 def main():
     mgr = FactManager()
     data = mgr.get_content()
