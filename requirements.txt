@@ -1,7 +1,9 @@
 moviepy==1.0.3
-edge-tts==6.1.9
-requests
-numpy
-pillow
-decorator
-imageio
+requests==2.31.0
+numpy==1.26.3
+pillow==10.2.0
+decorator==5.1.1
+imageio==2.33.1
+kokoro-onnx==0.2.0
+scipy==1.11.4
+gtts==2.5.0

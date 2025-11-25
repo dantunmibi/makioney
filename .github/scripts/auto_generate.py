@@ -3,8 +3,7 @@ import json
 import random
 import re
 import requests
-import asyncio
-import edge_tts
+import subprocess
 import numpy as np
 from PIL import Image
 from moviepy.editor import *
@@ -226,11 +225,63 @@ def render_video(scenario, audio_path, output_file):
     final = final.set_audio(audio_clip)
     final.write_videofile(output_file, fps=24, codec='libx264', audio_codec='aac', threads=4, preset='fast')
 
-# --- EXECUTION ---
+# --- MODULE 4: AUDIO GENERATION (Kokoro TTS) ---
 
-async def generate_audio(text, filename):
-    communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural")
-    await communicate.save(filename)
+def generate_audio(text, filename):
+    """
+    Generate natural-sounding audio using Kokoro TTS
+    Fallback to gTTS if Kokoro fails
+    """
+    try:
+        print("🎤 Generating audio with Kokoro TTS...")
+        import kokoro
+        
+        # Initialize voice (choose one below)
+        voice = kokoro.KPipeline(
+            lang_code="en-us", 
+            voice="af_bella"  # Options: af_bella, af_sarah, am_adam, am_michael, bf_emma
+        )
+        
+        # Generate audio array
+        audio_array = voice(text)
+        
+        # Save as WAV first
+        temp_wav = filename.replace('.mp3', '_temp.wav')
+        
+        # Write WAV file
+        import scipy.io.wavfile as wav
+        wav.write(temp_wav, 24000, audio_array)
+        
+        # Convert to MP3 using ffmpeg
+        subprocess.run([
+            'ffmpeg', '-i', temp_wav, 
+            '-codec:a', 'libmp3lame', 
+            '-qscale:a', '2',  # High quality
+            '-y', filename
+        ], check=True, capture_output=True, stderr=subprocess.PIPE)
+        
+        # Cleanup temp file
+        if os.path.exists(temp_wav):
+            os.remove(temp_wav)
+        
+        print(f"✅ Audio saved: {filename}")
+        
+    except Exception as e:
+        print(f"⚠️ Kokoro TTS failed ({e}), using gTTS fallback...")
+        
+        # Fallback to gTTS
+        try:
+            from gtts import gTTS
+            tts = gTTS(text=text, lang='en', slow=False, tld='com')
+            tts.save(filename)
+            print(f"✅ Audio saved with gTTS: {filename}")
+        except Exception as gtts_error:
+            print(f"❌ Both TTS methods failed: {gtts_error}")
+            # Create silent audio as last resort
+            silent = AudioClip(lambda t: 0, duration=5)
+            silent.write_audiofile(filename, fps=44100, codec='libmp3lame')
+
+# --- EXECUTION ---
 
 def main():
     # 1. Get Content
@@ -239,10 +290,10 @@ def main():
     
     print(f"✅ LOCKED: {data['option_a']} vs {data['option_b']}")
     
-    # 2. Generate Audio
+    # 2. Generate Audio (NOW SYNCHRONOUS - NO ASYNCIO)
     audio_script = f"Would you rather {data['option_a']}, or {data['option_b']}? Make your choice."
     audio_path = os.path.join(OUTPUT_DIR, "voice.mp3")
-    asyncio.run(generate_audio(audio_script, audio_path))
+    generate_audio(audio_script, audio_path)
     
     # 3. Render Video
     video_path = os.path.join(OUTPUT_DIR, f"wyr_{data['id']}.mp4")
@@ -252,10 +303,13 @@ def main():
     mgr.save_history(data['id'])
     
     # 5. Cleanup
-    if os.path.exists(audio_path): os.remove(audio_path)
+    if os.path.exists(audio_path): 
+        os.remove(audio_path)
     # Clean cache to prevent disk bloat
     for f in os.listdir(CACHE_DIR):
-        os.remove(os.path.join(CACHE_DIR, f))
+        file_path = os.path.join(CACHE_DIR, f)
+        if os.path.isfile(file_path):
+            os.remove(file_path)
     
     print("✨ DONE. Video ready in output/")
 

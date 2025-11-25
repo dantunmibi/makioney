@@ -3,8 +3,7 @@ import json
 import random
 import re
 import requests
-import asyncio
-import edge_tts
+import subprocess
 from moviepy.editor import *
 from moviepy.config import change_settings
 
@@ -37,10 +36,8 @@ class FactManager:
         with open(self.history_file, 'w') as f: json.dump(self.history, f)
 
     def clean_text(self, text):
-        # Remove Reddit formatting like "TIL that", "TIL: ", etc.
         text = re.sub(r"(?i)^(til|today i learned)( that)?[:\s-]*", "", text)
-        # Capitalize first letter
-        return text[0].upper() + text[1:]
+        return text[0].upper() + text[1:] if text else text
 
     def get_content(self):
         try:
@@ -52,7 +49,6 @@ class FactManager:
             
             for post in data['data']['children']:
                 p = post['data']
-                # Constraints: Short title (<200 chars) and Safe for Work
                 if p['id'] not in self.history and not p['over_18'] and len(p['title']) < 200:
                     return {
                         "id": p['id'],
@@ -61,7 +57,6 @@ class FactManager:
         except Exception as e:
             print(f"⚠️ Scrape failed: {e}")
         
-        # Emergency Backup Facts
         backups = [
             ("b_01", "Wombat poop is cube-shaped to stop it from rolling away."),
             ("b_02", "Honey never spoils. You can eat 3000-year-old honey."),
@@ -74,8 +69,6 @@ class FactManager:
 # --- MODULE 2: ASSET GENERATOR ---
 class AssetGen:
     def get_fact_image(self, text):
-        # Extract keywords for prompt (simple split)
-        # We want a "Documentary" style look
         prompt = f"documentary photography, national geographic style, 4k, {text[:50]}"
         encoded = requests.utils.quote(prompt)
         url = f"https://pollinations.ai/p/{encoded}?width=1080&height=1920&nologo=true"
@@ -90,49 +83,66 @@ class AssetGen:
         except: pass
         return None
 
-# --- MODULE 3: RENDER ENGINE ---
-async def generate_voice(text, filename):
-    # Script wrapper to create suspense
-    script = f"Here is a fact that sounds fake, but is actually true. {text}"
-    communicate = edge_tts.Communicate(script, "en-US-EricNeural") # Energetic voice
-    await communicate.save(filename)
+# --- MODULE 3: AUDIO (Kokoro TTS) ---
+def generate_voice(text, filename):
+    """Generate energetic voice for facts"""
+    try:
+        print("🎤 Generating voice with Kokoro...")
+        import kokoro
+        
+        script = f"Here is a fact that sounds fake, but is actually true. {text}"
+        
+        # Use energetic female voice
+        voice = kokoro.KPipeline(lang_code="en-us", voice="af_sarah")
+        audio_array = voice(script)
+        
+        import scipy.io.wavfile as wav
+        temp_wav = filename.replace('.mp3', '_temp.wav')
+        wav.write(temp_wav, 24000, audio_array)
+        
+        subprocess.run([
+            'ffmpeg', '-i', temp_wav,
+            '-codec:a', 'libmp3lame', '-qscale:a', '2',
+            '-y', filename
+        ], check=True, capture_output=True, stderr=subprocess.PIPE)
+        
+        if os.path.exists(temp_wav): os.remove(temp_wav)
+        
+    except Exception as e:
+        print(f"⚠️ Kokoro failed ({e}), using gTTS...")
+        from gtts import gTTS
+        script = f"Here is a fact that sounds fake, but is actually true. {text}"
+        tts = gTTS(text=script, lang='en', slow=False)
+        tts.save(filename)
 
+# --- MODULE 4: RENDER ENGINE ---
 def render_fact_video(data, audio_path, output_file):
     assets = AssetGen()
     
-    # 1. Audio
     audio = AudioFileClip(audio_path)
-    duration = audio.duration + 1.5 # Slight pause at end
+    duration = audio.duration + 1.5
     
-    # 2. Visuals (AI Image)
     img_path = assets.get_fact_image(data['text'])
     if img_path:
         clip = ImageClip(img_path).resize(height=1920).crop(x1=0, width=1080).set_duration(duration)
-        # Darken for text readability
         darken = ColorClip(size=(1080, 1920), color=(0,0,0)).set_opacity(0.6).set_duration(duration)
         background = CompositeVideoClip([clip, darken])
     else:
         background = ColorClip(size=(1080, 1920), color=(20, 20, 30)).set_duration(duration)
 
-    # 3. Header: "FAKE OR REAL?"
     header_box = ColorClip(size=(800, 150), color=(255, 200, 0)).set_position(('center', 150)).set_duration(duration)
     header_txt = TextClip("FAKE OR REAL?", font=FONT_PATH, fontsize=80, color='black').set_position(('center', 165)).set_duration(duration)
 
-    # 4. The Fact Text
-    # Wrap text logic (simple approx)
     fact_txt = TextClip(data['text'], font=FONT_PATH, fontsize=65, color='white', 
                         method='caption', size=(900, None), align='center', stroke_color='black', stroke_width=2)
     fact_txt = fact_txt.set_position('center').set_duration(duration)
 
-    # 5. The "TRUE" Stamp (Appears at the end)
-    # Trigger the stamp at 70% of the video
     stamp_time = duration * 0.7
     stamp_duration = duration - stamp_time
     
     stamp_box = ColorClip(size=(700, 200), color=(0, 200, 50)).set_position(('center', 1400)).set_start(stamp_time).set_duration(stamp_duration)
     stamp_txt = TextClip("✅ 100% TRUE", font=FONT_PATH, fontsize=90, color='white').set_position(('center', 1450)).set_start(stamp_time).set_duration(stamp_duration)
 
-    # 6. Composite
     final = CompositeVideoClip([
         background, 
         header_box, header_txt,
@@ -149,7 +159,7 @@ def main():
     print(f"🧠 Fact: {data['text']}")
     
     audio_path = os.path.join(OUTPUT_DIR, "fact_voice.mp3")
-    asyncio.run(generate_voice(data['text'], audio_path))
+    generate_voice(data['text'], audio_path)  # ← No asyncio
     
     vid_path = os.path.join(OUTPUT_DIR, f"weird_fact_{data['id']}.mp4")
     render_fact_video(data, audio_path, vid_path)
@@ -157,7 +167,9 @@ def main():
     mgr.save_history(data['id'])
     
     if os.path.exists(audio_path): os.remove(audio_path)
-    for f in os.listdir(CACHE_DIR): os.remove(os.path.join(CACHE_DIR, f))
+    for f in os.listdir(CACHE_DIR): 
+        fp = os.path.join(CACHE_DIR, f)
+        if os.path.isfile(fp): os.remove(fp)
 
 if __name__ == "__main__":
     main()
