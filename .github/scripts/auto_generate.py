@@ -323,10 +323,9 @@ def render_video(scenario, audio_path, output_file):
 # --- MODULE 4: AUDIO GENERATION (FIXED KOKORO) ---
 
 # --- MODULE 4: AUDIO GENERATION (FIXED KOKORO) ---
-
-def generate_audio(text, filename):  # ✅ REMOVED 'self'
+def generate_audio(text, filename):
     """
-    Generate audio using Kokoro TTS with robust error handling.
+    Generate audio using Kokoro TTS with DEEP nested array handling.
     Falls back to gTTS if Kokoro fails.
     """
     try:
@@ -348,38 +347,70 @@ def generate_audio(text, filename):  # ✅ REMOVED 'self'
         # Generate audio
         result = pipeline(text, voice="af_bella")
         
-        # Collect and process chunks robustly
+        # Collect and process chunks with RECURSIVE flattening
         valid_chunks = []
         
+        def deep_flatten(item):
+            """Recursively flatten nested arrays/tensors."""
+            # Handle torch tensors
+            if isinstance(item, torch.Tensor):
+                return item.detach().cpu().numpy().flatten()
+            
+            # Handle numpy arrays
+            elif isinstance(item, np.ndarray):
+                # If already 1D, return as-is
+                if item.ndim == 1:
+                    return item
+                # If multi-dimensional, flatten
+                else:
+                    return item.flatten()
+            
+            # Handle lists/tuples (nested structures)
+            elif isinstance(item, (list, tuple)):
+                flattened_parts = []
+                for sub_item in item:
+                    sub_flattened = deep_flatten(sub_item)
+                    if sub_flattened is not None and len(sub_flattened) > 0:
+                        flattened_parts.append(sub_flattened)
+                
+                if flattened_parts:
+                    return np.concatenate(flattened_parts)
+                else:
+                    return np.array([])
+            
+            # Handle scalar values
+            elif isinstance(item, (int, float)):
+                return np.array([item], dtype=np.float32)
+            
+            # Unknown type - try converting
+            else:
+                try:
+                    return np.asarray(item, dtype=np.float32).flatten()
+                except:
+                    return np.array([])
+        
+        # Process each chunk
         for idx, chunk in enumerate(result):
             try:
-                # Convert to numpy array
-                if isinstance(chunk, torch.Tensor):
-                    chunk_array = chunk.detach().cpu().numpy()
-                elif isinstance(chunk, np.ndarray):
-                    chunk_array = chunk.copy()
-                elif isinstance(chunk, (list, tuple)):
-                    chunk_array = np.array(chunk, dtype=np.float32)
-                else:
-                    # Unknown type, try conversion
-                    chunk_array = np.asarray(chunk, dtype=np.float32)
+                # Deep flatten the chunk
+                chunk_array = deep_flatten(chunk)
                 
-                # Flatten to 1D
-                chunk_array = chunk_array.flatten()
-                
-                # Validate non-empty
+                # Validate
                 if chunk_array.size > 0 and not np.all(np.isnan(chunk_array)):
                     valid_chunks.append(chunk_array)
+                    print(f"  ✓ Chunk {idx}: {chunk_array.size} samples")
+                else:
+                    print(f"  ⚠️ Chunk {idx}: Empty or NaN")
                     
             except Exception as chunk_err:
-                print(f"  ⚠️ Skipping chunk {idx}: {chunk_err}")
+                print(f"  ⚠️ Chunk {idx} failed: {str(chunk_err)[:80]}")
                 continue
         
         # Verify we have audio data
         if len(valid_chunks) == 0:
             raise ValueError("No valid audio chunks produced")
         
-        print(f"  ✓ Processed {len(valid_chunks)} audio chunks")
+        print(f"  ✓ Successfully processed {len(valid_chunks)} chunks")
         
         # Concatenate all chunks
         audio_array = np.concatenate(valid_chunks)
@@ -398,15 +429,15 @@ def generate_audio(text, filename):  # ✅ REMOVED 'self'
         sample_rate = 24000  # Kokoro default
         wavfile.write(wav_temp, sample_rate, audio_int16)
         
-        print(f"  ✓ WAV created: {wav_temp}")
+        print(f"  ✓ WAV created: {os.path.basename(wav_temp)}")
         
         # Convert WAV to MP3 using ffmpeg
         ffmpeg_result = subprocess.run([
-            'ffmpeg', '-y',
+            'ffmpeg', '-y', '-loglevel', 'error',
             '-i', wav_temp,
             '-codec:a', 'libmp3lame',
             '-qscale:a', '2',
-            '-ar', '24000',  # Match sample rate
+            '-ar', '24000',
             filename
         ], capture_output=True, text=True)
         
@@ -416,11 +447,12 @@ def generate_audio(text, filename):  # ✅ REMOVED 'self'
         # Cleanup temp file
         os.remove(wav_temp)
         
-        print(f"✅ Kokoro audio saved: {filename}")
+        print(f"✅ Kokoro audio saved: {os.path.basename(filename)}")
         return filename
         
     except Exception as kokoro_error:
-        print(f"⚠️ Kokoro TTS failed: {str(kokoro_error)[:100]}")
+        error_msg = str(kokoro_error)[:150]
+        print(f"⚠️ Kokoro TTS failed: {error_msg}")
         print("    🔄 Falling back to gTTS...")
         
         # Fallback to gTTS
@@ -428,7 +460,7 @@ def generate_audio(text, filename):  # ✅ REMOVED 'self'
             from gtts import gTTS
             tts = gTTS(text=text, lang='en', slow=False)
             tts.save(filename)
-            print(f"✅ gTTS audio saved: {filename}")
+            print(f"✅ gTTS audio saved: {os.path.basename(filename)}")
             return filename
         except Exception as gtts_error:
             print(f"❌ Both TTS methods failed!")
