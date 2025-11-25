@@ -42,10 +42,20 @@ class FactManager:
     def get_content(self):
         try:
             print("🧠 Mining r/todayilearned for weird facts...")
-            headers = {'User-Agent': 'Mozilla/5.0'}
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+            }
             url = "https://www.reddit.com/r/todayilearned/hot.json?limit=25"
-            r = requests.get(url, headers=headers, timeout=10)
-            data = r.json()
+            
+            try:
+                r = requests.get(url, headers=headers, timeout=15)
+                r.raise_for_status()
+                data = r.json()
+            except requests.exceptions.JSONDecodeError:
+                url = "https://old.reddit.com/r/todayilearned/hot.json?limit=25"
+                r = requests.get(url, headers=headers, timeout=15)
+                data = r.json()
             
             for post in data['data']['children']:
                 p = post['data']
@@ -89,14 +99,15 @@ def generate_voice(text, filename):
     try:
         print("🎤 Generating voice with Kokoro...")
         import kokoro
+        import numpy as np
         
         script = f"Here is a fact that sounds fake, but is actually true. {text}"
         
-        # Initialize pipeline
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Use energetic female voice
-        audio_array = pipeline(script, voice="af_sarah")
+        # Kokoro returns a generator - convert to numpy array
+        audio_generator = pipeline(script, voice="af_sarah")
+        audio_array = np.concatenate([chunk for chunk in audio_generator])
         
         import scipy.io.wavfile as wav
         temp_wav = filename.replace('.mp3', '_temp.wav')
@@ -110,6 +121,8 @@ def generate_voice(text, filename):
         
         if os.path.exists(temp_wav): 
             os.remove(temp_wav)
+        
+        print(f"✅ Audio saved")
             
     except Exception as e:
         print(f"⚠️ Kokoro failed ({e}), using gTTS...")
@@ -117,6 +130,7 @@ def generate_voice(text, filename):
         script = f"Here is a fact that sounds fake, but is actually true. {text}"
         tts = gTTS(text=script, lang='en', slow=False)
         tts.save(filename)
+        print(f"✅ Audio saved with gTTS")
 
 # --- MODULE 4: RENDER ENGINE ---
 def render_fact_video(data, audio_path, output_file):

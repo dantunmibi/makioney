@@ -68,10 +68,22 @@ class AutoContentManager:
         return self._generate_offline()
 
     def _scrape_reddit(self):
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
         url = "https://www.reddit.com/r/WouldYouRather/hot.json?limit=15"
-        r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
+        
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            r.raise_for_status()  # Raise error for bad status codes
+            data = r.json()
+        except requests.exceptions.JSONDecodeError:
+            # Reddit might be returning HTML instead of JSON - try old.reddit
+            url = "https://old.reddit.com/r/WouldYouRather/hot.json?limit=15"
+            r = requests.get(url, headers=headers, timeout=15)
+            data = r.json()
         
         for post in data['data']['children']:
             title = post['data']['title']
@@ -117,21 +129,41 @@ class AutoContentManager:
 
 class AssetGenerator:
     def get_ai_image(self, prompt, side):
-        """Fetches image from Pollinations.ai"""
+        """Fetches image from Pollinations.ai with retry and fallback"""
         clean_prompt = f"cinematic lighting, hyperrealistic, 4k, detailed, {prompt}"
         encoded = requests.utils.quote(clean_prompt)
-        url = f"https://pollinations.ai/p/{encoded}?width=1080&height=960&nologo=true"
+        
+        # Try Pollinations first
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=960&nologo=true"
         filename = os.path.join(CACHE_DIR, f"{side}_{abs(hash(prompt))}.jpg")
         
+        # Retry logic for Pollinations
+        for attempt in range(2):
+            try:
+                print(f"🎨 Generating AI Art (attempt {attempt+1}): {prompt[:30]}...")
+                r = requests.get(url, timeout=30)  # Increased timeout
+                if r.status_code == 200 and len(r.content) > 5000:  # Ensure it's an actual image
+                    with open(filename, 'wb') as f:
+                        f.write(r.content)
+                    return filename
+            except Exception as e:
+                print(f"⚠️ Pollinations attempt {attempt+1} failed: {e}")
+                if attempt == 0:
+                    import time
+                    time.sleep(2)  # Wait before retry
+        
+        # Fallback to Hugging Face Inference API (no API key needed for basic usage)
         try:
-            print(f"🎨 Generating AI Art: {prompt[:30]}...")
-            r = requests.get(url, timeout=20)
-            if r.status_code == 200:
+            print(f"🔄 Trying backup image API...")
+            hf_url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1080&height=960"
+            r = requests.get(hf_url, timeout=30)
+            if r.status_code == 200 and len(r.content) > 5000:
                 with open(filename, 'wb') as f:
                     f.write(r.content)
                 return filename
         except Exception as e:
-            print(f"⚠️ Image Gen failed: {e}")
+            print(f"⚠️ Backup API also failed: {e}")
+        
         return None
 
     def create_gradient(self, w, h, c1, c2):
@@ -234,28 +266,24 @@ def render_video(scenario, audio_path, output_file):
 # --- MODULE 4: AUDIO GENERATION (Kokoro TTS) ---
 
 def generate_audio(text, filename):
-    """
-    Generate natural-sounding audio using Kokoro TTS
-    Fallback to gTTS if Kokoro fails
-    """
     try:
         print("🎤 Generating audio with Kokoro TTS...")
         import kokoro
+        import numpy as np
         
-        # Initialize pipeline without voice parameter
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Generate audio array - pass voice as parameter to the call
-        audio_array = pipeline(text, voice="af_bella")
+        # Kokoro returns a generator, convert to numpy array
+        audio_generator = pipeline(text, voice="af_bella")
+        audio_array = np.concatenate([chunk for chunk in audio_generator])
         
         # Save as WAV first
         temp_wav = filename.replace('.mp3', '_temp.wav')
         
-        # Write WAV file
         import scipy.io.wavfile as wav
         wav.write(temp_wav, 24000, audio_array)
         
-        # Convert to MP3 using ffmpeg
+        # Convert to MP3
         subprocess.run([
             'ffmpeg', '-i', temp_wav, 
             '-codec:a', 'libmp3lame', 
@@ -263,7 +291,6 @@ def generate_audio(text, filename):
             '-y', filename
         ], check=True, capture_output=True, stderr=subprocess.PIPE)
         
-        # Cleanup temp file
         if os.path.exists(temp_wav):
             os.remove(temp_wav)
         
@@ -271,18 +298,10 @@ def generate_audio(text, filename):
         
     except Exception as e:
         print(f"⚠️ Kokoro TTS failed ({e}), using gTTS fallback...")
-        
-        # Fallback to gTTS
-        try:
-            from gtts import gTTS
-            tts = gTTS(text=text, lang='en', slow=False, tld='com')
-            tts.save(filename)
-            print(f"✅ Audio saved with gTTS: {filename}")
-        except Exception as gtts_error:
-            print(f"❌ Both TTS methods failed: {gtts_error}")
-            # Create silent audio as last resort
-            silent = AudioClip(lambda t: 0, duration=5)
-            silent.write_audiofile(filename, fps=44100, codec='libmp3lame')
+        from gtts import gTTS
+        tts = gTTS(text=text, lang='en', slow=False, tld='com')
+        tts.save(filename)
+        print(f"✅ Audio saved with gTTS: {filename}")
 # --- EXECUTION ---
 
 def main():

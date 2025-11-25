@@ -39,10 +39,20 @@ class HorrorContentManager:
     def get_content(self):
         try:
             print("👻 Scraping r/TwoSentenceHorror...")
-            headers = {'User-Agent': 'Mozilla/5.0'}
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+            }
             url = "https://www.reddit.com/r/TwoSentenceHorror/hot.json?limit=20"
-            r = requests.get(url, headers=headers, timeout=10)
-            data = r.json()
+            
+            try:
+                r = requests.get(url, headers=headers, timeout=15)
+                r.raise_for_status()
+                data = r.json()
+            except requests.exceptions.JSONDecodeError:
+                url = "https://old.reddit.com/r/TwoSentenceHorror/hot.json?limit=20"
+                r = requests.get(url, headers=headers, timeout=15)
+                data = r.json()
             
             for post in data['data']['children']:
                 p = post['data']
@@ -84,12 +94,13 @@ def generate_scary_voice(text, filename):
     try:
         print("🎤 Generating scary voice with Kokoro...")
         import kokoro
+        import numpy as np
         
-        # Initialize pipeline
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Use deeper male voice for horror
-        audio_array = pipeline(text, voice="am_adam")
+        # Kokoro returns a generator - convert to numpy array
+        audio_generator = pipeline(text, voice="am_adam")
+        audio_array = np.concatenate([chunk for chunk in audio_generator])
         
         # Save as WAV
         import scipy.io.wavfile as wav
@@ -108,6 +119,13 @@ def generate_scary_voice(text, filename):
             os.remove(temp_wav)
         
         print(f"✅ Scary audio generated")
+        
+    except Exception as e:
+        print(f"⚠️ Kokoro failed ({e}), using gTTS...")
+        from gtts import gTTS
+        tts = gTTS(text=text, lang='en', slow=True)
+        tts.save(filename)
+        print(f"✅ Audio saved with gTTS")
         
     except Exception as e:
         print(f"⚠️ Kokoro failed ({e}), using gTTS...")
