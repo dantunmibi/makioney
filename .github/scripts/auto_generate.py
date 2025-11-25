@@ -69,52 +69,47 @@ class AutoContentManager:
         return self._generate_offline()
 
     def _scrape_reddit(self):
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-        
-        # Random delay to avoid rate limiting
-        time.sleep(random.uniform(1, 3))
-        
-        urls = [
-            "https://old.reddit.com/r/WouldYouRather/top.json?t=day&limit=20",
-            "https://www.reddit.com/r/WouldYouRather/.json?limit=20",
-        ]
-        
-        for url in urls:
-            try:
-                r = requests.get(url, headers=headers, timeout=10)
-                if r.status_code == 200:
-                    data = r.json()
+        # Try Pushshift (Reddit archive - no auth needed)
+        try:
+            print("🌐 Fetching from Pushshift archive...")
+            url = "https://api.pullpush.io/reddit/search/submission"
+            params = {
+                'subreddit': 'WouldYouRather',
+                'sort': 'desc',
+                'sort_type': 'score',
+                'size': 25,
+                'fields': 'id,title,score'
+            }
+            
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                
+                for post in data.get('data', []):
+                    title = post.get('title', '')
+                    pid = post.get('id', '')
                     
-                    for post in data['data']['children']:
-                        title = post['data']['title']
-                        pid = post['data']['id']
+                    if pid in self.history:
+                        continue
+                    
+                    match = re.search(r"(?i)would you rather\s+(.*?)\s+(?:or|,\s*or)\s+(.*)", title)
+                    if match:
+                        opt_a = match.group(1).strip('?.! ')
+                        opt_b = match.group(2).strip('?.! ')
                         
-                        # Regex to extract A and B
-                        match = re.search(r"(?i)would you rather\s+(.*?)\s+(?:or|,\s*or)\s+(.*)", title)
-                        if match:
-                            opt_a = match.group(1).strip('?.! ')
-                            opt_b = match.group(2).strip('?.! ')
-                            
-                            # Simulate stats based on upvote ratio
-                            ratio = post['data']['upvote_ratio']
-                            stat_a = int(ratio * 100)
-                            
-                            # Add variance so it's not always clean numbers
-                            if stat_a > 90: stat_a = 88
-                            if stat_a < 10: stat_a = 12
-                            
-                            return {
-                                "id": pid,
-                                "option_a": opt_a,
-                                "option_b": opt_b,
-                                "stats": [stat_a, 100-stat_a]
-                            }
-                    break
-            except Exception as e:
-                print(f"⚠️ URL {url} failed: {e}")
-                continue
+                        # Use score to estimate preference
+                        score = post.get('score', 100)
+                        stat_a = min(max(int((score % 60) + 20), 25), 75)
+                        
+                        print(f"✅ Found from Pushshift: {title[:50]}...")
+                        return {
+                            "id": pid,
+                            "option_a": opt_a,
+                            "option_b": opt_b,
+                            "stats": [stat_a, 100-stat_a]
+                        }
+        except Exception as e:
+            print(f"⚠️ Pushshift failed: {e}")
         
         return None
 
@@ -136,37 +131,45 @@ class AutoContentManager:
 
 class AssetGenerator:
     def get_ai_image(self, prompt, side):
-        """Fetches image using a faster, more reliable API"""
-        clean_prompt = f"cinematic, detailed, high quality, {prompt}"
+        """Use faster image API with local generation fallback"""
+        clean_prompt = f"high quality, detailed, {prompt}"
         encoded = requests.utils.quote(clean_prompt)
         filename = os.path.join(CACHE_DIR, f"{side}_{abs(hash(prompt))}.jpg")
         
+        # Try fast APIs in order
         apis = [
-            f"https://pollinations.ai/p/{encoded}?width=1080&height=960&nologo=true&enhance=true",
-            f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=960&nologo=true",
+            # Hugging Face Inference (usually faster)
+            f"https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell",
+            # Pollinations with shorter prompt
+            f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=960&nologo=true&seed={random.randint(1,9999)}",
         ]
         
-        for api_url in apis:
+        for idx, api_url in enumerate(apis):
             try:
-                print(f"🎨 Generating AI Art: {prompt[:30]}...")
-                r = requests.get(api_url, timeout=45, stream=True)
+                print(f"🎨 Generating image (API {idx+1})...")
                 
-                if r.status_code == 200:
+                if idx == 0:  # Hugging Face
+                    response = requests.post(
+                        api_url,
+                        headers={"Content-Type": "application/json"},
+                        json={"inputs": clean_prompt},
+                        timeout=20
+                    )
+                else:  # Pollinations
+                    response = requests.get(api_url, timeout=20, stream=True)
+                
+                if response.status_code == 200 and len(response.content) > 5000:
                     with open(filename, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
+                        f.write(response.content)
+                    print(f"✅ Image generated")
+                    return filename
                     
-                    if os.path.exists(filename) and os.path.getsize(filename) > 5000:
-                        print(f"✅ Image generated successfully")
-                        return filename
             except Exception as e:
-                print(f"⚠️ API failed: {e}")
+                print(f"⚠️ API {idx+1} failed: {str(e)[:50]}")
                 continue
         
-        print(f"⚠️ All image APIs failed, using gradient fallback")
+        print(f"⚠️ All APIs failed, using gradient")
         return None
-
     def create_gradient(self, w, h, c1, c2):
         """NumPy Gradient Generator"""
         r1, g1, b1 = c1
@@ -267,64 +270,47 @@ def generate_audio(text, filename):
         
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Generate audio - handle different return types
+        # Get the generator
         result = pipeline(text, voice="af_bella")
         
-        # Check if it's already an array
-        if isinstance(result, np.ndarray):
-            audio_array = result
-        else:
-            # It's a generator - collect chunks
-            chunks = list(result)
-            if len(chunks) == 0:
-                raise ValueError("No audio chunks generated")
-            
-            # Try to concatenate - if shapes don't match, flatten everything
-            try:
-                audio_array = np.concatenate(chunks)
-            except ValueError:
-                # Shapes mismatch - flatten each chunk first
-                flat_chunks = []
-                for chunk in chunks:
-                    if isinstance(chunk, np.ndarray):
-                        flat_chunks.extend(chunk.flatten())
-                    else:
-                        flat_chunks.extend(np.array(chunk).flatten())
-                audio_array = np.array(flat_chunks)
+        # Convert generator to list of chunks
+        chunks = []
+        for chunk in result:
+            if hasattr(chunk, 'numpy'):  # If it's a tensor
+                chunks.append(chunk.numpy().flatten())
+            elif isinstance(chunk, np.ndarray):
+                chunks.append(chunk.flatten())
+            else:
+                chunks.append(np.array(chunk, dtype=np.float32).flatten())
         
-        # Ensure proper dtype
-        if audio_array.dtype == np.float32 or audio_array.dtype == np.float64:
-            # Normalize to -1 to 1 range if needed
-            audio_array = np.clip(audio_array, -1, 1)
-            audio_array = (audio_array * 32767).astype(np.int16)
-        elif audio_array.dtype != np.int16:
-            audio_array = audio_array.astype(np.int16)
+        # Concatenate all flattened chunks
+        audio_array = np.concatenate(chunks)
         
-        # Save as WAV
+        # Convert to int16
+        audio_array = np.clip(audio_array, -1.0, 1.0)
+        audio_array = (audio_array * 32767).astype(np.int16)
+        
+        # Save
         temp_wav = filename.replace('.mp3', '_temp.wav')
         import scipy.io.wavfile as wav
         wav.write(temp_wav, 24000, audio_array)
         
-        # Convert to MP3
         subprocess.run([
-            'ffmpeg', '-i', temp_wav, 
-            '-codec:a', 'libmp3lame', 
-            '-qscale:a', '2',
-            '-y', filename
-        ], check=True, capture_output=True, stderr=subprocess.PIPE)
+            'ffmpeg', '-i', temp_wav, '-codec:a', 'libmp3lame', 
+            '-qscale:a', '2', '-y', filename
+        ], check=True, capture_output=True)
         
         if os.path.exists(temp_wav):
             os.remove(temp_wav)
         
-        print(f"✅ Audio saved: {filename}")
+        print(f"✅ Kokoro audio saved")
         
     except Exception as e:
-        print(f"⚠️ Kokoro TTS failed ({e}), using gTTS fallback...")
+        print(f"⚠️ Kokoro failed ({e}), using gTTS...")
         from gtts import gTTS
         tts = gTTS(text=text, lang='en', slow=False, tld='com')
         tts.save(filename)
-        print(f"✅ Audio saved with gTTS: {filename}")
-
+        print(f"✅ gTTS audio saved")
 # --- EXECUTION ---
 
 def main():
