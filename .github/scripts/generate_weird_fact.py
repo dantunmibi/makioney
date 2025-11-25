@@ -4,6 +4,7 @@ import random
 import re
 import requests
 import subprocess
+import time
 from moviepy.editor import *
 from moviepy.config import change_settings
 
@@ -16,8 +17,10 @@ CACHE_DIR = os.path.join(OUTPUT_DIR, "cache")
 ASSETS_DIR = os.path.join(BASE_DIR, ".github/assets")
 FONT_PATH = os.path.join(ASSETS_DIR, "fonts/Montserrat-Bold.ttf")
 
-if not os.path.exists(FONT_PATH): FONT_PATH = "DejaVu-Sans-Bold"
-for d in [DATA_DIR, OUTPUT_DIR, CACHE_DIR]: os.makedirs(d, exist_ok=True)
+if not os.path.exists(FONT_PATH): 
+    FONT_PATH = "DejaVu-Sans-Bold"
+for d in [DATA_DIR, OUTPUT_DIR, CACHE_DIR]: 
+    os.makedirs(d, exist_ok=True)
 
 # --- MODULE 1: FACT MINER (r/todayilearned) ---
 class FactManager:
@@ -27,13 +30,16 @@ class FactManager:
 
     def _load_history(self):
         if os.path.exists(self.history_file):
-            try: return json.load(open(self.history_file))
-            except: return []
+            try: 
+                return json.load(open(self.history_file))
+            except: 
+                return []
         return []
 
     def save_history(self, entry_id):
         self.history.append(entry_id)
-        with open(self.history_file, 'w') as f: json.dump(self.history, f)
+        with open(self.history_file, 'w') as f: 
+            json.dump(self.history, f)
 
     def clean_text(self, text):
         text = re.sub(r"(?i)^(til|today i learned)( that)?[:\s-]*", "", text)
@@ -43,27 +49,33 @@ class FactManager:
         try:
             print("🧠 Mining r/todayilearned for weird facts...")
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             }
-            url = "https://www.reddit.com/r/todayilearned/hot.json?limit=25"
             
-            try:
-                r = requests.get(url, headers=headers, timeout=15)
-                r.raise_for_status()
-                data = r.json()
-            except requests.exceptions.JSONDecodeError:
-                url = "https://old.reddit.com/r/todayilearned/hot.json?limit=25"
-                r = requests.get(url, headers=headers, timeout=15)
-                data = r.json()
+            time.sleep(random.uniform(1, 3))
             
-            for post in data['data']['children']:
-                p = post['data']
-                if p['id'] not in self.history and not p['over_18'] and len(p['title']) < 200:
-                    return {
-                        "id": p['id'],
-                        "text": self.clean_text(p['title'])
-                    }
+            urls = [
+                "https://old.reddit.com/r/todayilearned/top.json?t=day&limit=25",
+                "https://www.reddit.com/r/todayilearned/.json?limit=25",
+            ]
+            
+            for url in urls:
+                try:
+                    r = requests.get(url, headers=headers, timeout=10)
+                    if r.status_code == 200:
+                        data = r.json()
+                        
+                        for post in data['data']['children']:
+                            p = post['data']
+                            if p['id'] not in self.history and not p['over_18'] and len(p['title']) < 200:
+                                return {
+                                    "id": p['id'],
+                                    "text": self.clean_text(p['title'])
+                                }
+                        break
+                except Exception as e:
+                    print(f"⚠️ URL {url} failed: {e}")
+                    continue
         except Exception as e:
             print(f"⚠️ Scrape failed: {e}")
         
@@ -81,21 +93,35 @@ class AssetGen:
     def get_fact_image(self, text):
         prompt = f"documentary photography, national geographic style, 4k, {text[:50]}"
         encoded = requests.utils.quote(prompt)
-        url = f"https://pollinations.ai/p/{encoded}?width=1080&height=1920&nologo=true"
-        filename = os.path.join(CACHE_DIR, f"fact_{hash(text)}.jpg")
+        filename = os.path.join(CACHE_DIR, f"fact_{abs(hash(text))}.jpg")
         
-        try:
-            print(f"🎨 Generating Fact Image...")
-            r = requests.get(url, timeout=20)
-            if r.status_code == 200:
-                with open(filename, 'wb') as f: f.write(r.content)
-                return filename
-        except: pass
+        apis = [
+            f"https://pollinations.ai/p/{encoded}?width=1080&height=1920&nologo=true&enhance=true",
+            f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1920&nologo=true",
+        ]
+        
+        for api_url in apis:
+            try:
+                print(f"🎨 Generating Fact Image...")
+                r = requests.get(api_url, timeout=45, stream=True)
+                
+                if r.status_code == 200:
+                    with open(filename, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    if os.path.exists(filename) and os.path.getsize(filename) > 5000:
+                        print(f"✅ Fact image generated")
+                        return filename
+            except Exception as e:
+                print(f"⚠️ API failed: {e}")
+                continue
+        
         return None
 
-# --- MODULE 3: AUDIO (Kokoro TTS) ---
+# --- MODULE 3: AUDIO ---
 def generate_voice(text, filename):
-    """Generate energetic voice for facts"""
     try:
         print("🎤 Generating voice with Kokoro...")
         import kokoro
@@ -105,9 +131,17 @@ def generate_voice(text, filename):
         
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Kokoro returns a generator - convert to numpy array
-        audio_generator = pipeline(script, voice="af_sarah")
-        audio_array = np.concatenate([chunk for chunk in audio_generator])
+        audio_chunks = []
+        for chunk in pipeline(script, voice="af_sarah"):
+            if isinstance(chunk, np.ndarray):
+                audio_chunks.append(chunk.flatten())
+            else:
+                audio_chunks.append(np.array(chunk).flatten())
+        
+        audio_array = np.concatenate(audio_chunks)
+        
+        if audio_array.dtype != np.int16:
+            audio_array = (audio_array * 32767).astype(np.int16)
         
         import scipy.io.wavfile as wav
         temp_wav = filename.replace('.mp3', '_temp.wav')
@@ -176,17 +210,19 @@ def main():
     print(f"🧠 Fact: {data['text']}")
     
     audio_path = os.path.join(OUTPUT_DIR, "fact_voice.mp3")
-    generate_voice(data['text'], audio_path)  # ← No asyncio
+    generate_voice(data['text'], audio_path)
     
     vid_path = os.path.join(OUTPUT_DIR, f"weird_fact_{data['id']}.mp4")
     render_fact_video(data, audio_path, vid_path)
     
     mgr.save_history(data['id'])
     
-    if os.path.exists(audio_path): os.remove(audio_path)
+    if os.path.exists(audio_path): 
+        os.remove(audio_path)
     for f in os.listdir(CACHE_DIR): 
         fp = os.path.join(CACHE_DIR, f)
-        if os.path.isfile(fp): os.remove(fp)
+        if os.path.isfile(fp): 
+            os.remove(fp)
 
 if __name__ == "__main__":
     main()

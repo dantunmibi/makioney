@@ -3,6 +3,7 @@ import json
 import random
 import requests
 import subprocess
+import time
 import numpy as np
 from moviepy.editor import *
 from moviepy.config import change_settings
@@ -16,9 +17,11 @@ CACHE_DIR = os.path.join(OUTPUT_DIR, "cache")
 ASSETS_DIR = os.path.join(BASE_DIR, ".github/assets")
 FONT_PATH = os.path.join(ASSETS_DIR, "fonts/Montserrat-Bold.ttf")
 
-# Ensure font fallback
-if not os.path.exists(FONT_PATH): FONT_PATH = "DejaVu-Sans-Bold"
-for d in [DATA_DIR, OUTPUT_DIR, CACHE_DIR]: os.makedirs(d, exist_ok=True)
+if not os.path.exists(FONT_PATH): 
+    FONT_PATH = "DejaVu-Sans-Bold"
+
+for d in [DATA_DIR, OUTPUT_DIR, CACHE_DIR]: 
+    os.makedirs(d, exist_ok=True)
 
 # --- MODULE 1: CONTENT (r/TwoSentenceHorror) ---
 class HorrorContentManager:
@@ -28,40 +31,49 @@ class HorrorContentManager:
 
     def _load_history(self):
         if os.path.exists(self.history_file):
-            try: return json.load(open(self.history_file))
-            except: return []
+            try: 
+                return json.load(open(self.history_file))
+            except: 
+                return []
         return []
 
     def save_history(self, entry_id):
         self.history.append(entry_id)
-        with open(self.history_file, 'w') as f: json.dump(self.history, f)
+        with open(self.history_file, 'w') as f: 
+            json.dump(self.history, f)
 
     def get_content(self):
         try:
             print("👻 Scraping r/TwoSentenceHorror...")
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             }
-            url = "https://www.reddit.com/r/TwoSentenceHorror/hot.json?limit=20"
             
-            try:
-                r = requests.get(url, headers=headers, timeout=15)
-                r.raise_for_status()
-                data = r.json()
-            except requests.exceptions.JSONDecodeError:
-                url = "https://old.reddit.com/r/TwoSentenceHorror/hot.json?limit=20"
-                r = requests.get(url, headers=headers, timeout=15)
-                data = r.json()
+            time.sleep(random.uniform(1, 3))
             
-            for post in data['data']['children']:
-                p = post['data']
-                if p['id'] not in self.history and not p['over_18']:
-                    return {
-                        "id": p['id'],
-                        "setup": p['title'],
-                        "punchline": p['selftext']
-                    }
+            urls = [
+                "https://old.reddit.com/r/TwoSentenceHorror/top.json?t=day&limit=20",
+                "https://www.reddit.com/r/TwoSentenceHorror/.json?limit=20",
+            ]
+            
+            for url in urls:
+                try:
+                    r = requests.get(url, headers=headers, timeout=10)
+                    if r.status_code == 200:
+                        data = r.json()
+                        
+                        for post in data['data']['children']:
+                            p = post['data']
+                            if p['id'] not in self.history and not p['over_18']:
+                                return {
+                                    "id": p['id'],
+                                    "setup": p['title'],
+                                    "punchline": p['selftext']
+                                }
+                        break
+                except Exception as e:
+                    print(f"⚠️ URL {url} failed: {e}")
+                    continue
         except Exception as e:
             print(f"⚠️ Scrape failed: {e}")
         
@@ -76,21 +88,35 @@ class HorrorAssetGen:
     def get_creepy_image(self, prompt):
         horror_prompt = f"horror photography, grainy, vintage, dark atmosphere, scary, {prompt}"
         encoded = requests.utils.quote(horror_prompt)
-        url = f"https://pollinations.ai/p/{encoded}?width=1080&height=1920&nologo=true"
-        filename = os.path.join(CACHE_DIR, f"scary_{hash(prompt)}.jpg")
+        filename = os.path.join(CACHE_DIR, f"scary_{abs(hash(prompt))}.jpg")
         
-        try:
-            print(f"🎨 Generating Horror Art: {prompt[:20]}...")
-            r = requests.get(url, timeout=20)
-            if r.status_code == 200:
-                with open(filename, 'wb') as f: f.write(r.content)
-                return filename
-        except: pass
+        apis = [
+            f"https://pollinations.ai/p/{encoded}?width=1080&height=1920&nologo=true&enhance=true",
+            f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1920&nologo=true",
+        ]
+        
+        for api_url in apis:
+            try:
+                print(f"🎨 Generating Horror Art: {prompt[:20]}...")
+                r = requests.get(api_url, timeout=45, stream=True)
+                
+                if r.status_code == 200:
+                    with open(filename, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    if os.path.exists(filename) and os.path.getsize(filename) > 5000:
+                        print(f"✅ Horror image generated")
+                        return filename
+            except Exception as e:
+                print(f"⚠️ API failed: {e}")
+                continue
+        
         return None
 
-# --- MODULE 3: AUDIO (Kokoro TTS) ---
+# --- MODULE 3: AUDIO ---
 def generate_scary_voice(text, filename):
-    """Generate creepy voice using Kokoro TTS"""
     try:
         print("🎤 Generating scary voice with Kokoro...")
         import kokoro
@@ -98,16 +124,22 @@ def generate_scary_voice(text, filename):
         
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Kokoro returns a generator - convert to numpy array
-        audio_generator = pipeline(text, voice="am_adam")
-        audio_array = np.concatenate([chunk for chunk in audio_generator])
+        audio_chunks = []
+        for chunk in pipeline(text, voice="am_adam"):
+            if isinstance(chunk, np.ndarray):
+                audio_chunks.append(chunk.flatten())
+            else:
+                audio_chunks.append(np.array(chunk).flatten())
         
-        # Save as WAV
+        audio_array = np.concatenate(audio_chunks)
+        
+        if audio_array.dtype != np.int16:
+            audio_array = (audio_array * 32767).astype(np.int16)
+        
         import scipy.io.wavfile as wav
         temp_wav = filename.replace('.mp3', '_temp.wav')
         wav.write(temp_wav, 24000, audio_array)
         
-        # Apply pitch shift for creepiness using ffmpeg
         subprocess.run([
             'ffmpeg', '-i', temp_wav,
             '-af', 'asetrate=24000*0.9,atempo=1.11,aresample=24000',
@@ -126,12 +158,6 @@ def generate_scary_voice(text, filename):
         tts = gTTS(text=text, lang='en', slow=True)
         tts.save(filename)
         print(f"✅ Audio saved with gTTS")
-        
-    except Exception as e:
-        print(f"⚠️ Kokoro failed ({e}), using gTTS...")
-        from gtts import gTTS
-        tts = gTTS(text=text, lang='en', slow=True)
-        tts.save(filename)
 
 # --- MODULE 4: RENDER ENGINE ---
 def render_scary_video(data, audio_path, output_file):
@@ -169,17 +195,19 @@ def main():
     
     full_text = f"{data['setup']} ... ... {data['punchline']}"
     audio_path = os.path.join(OUTPUT_DIR, "scary_voice.mp3")
-    generate_scary_voice(full_text, audio_path)  # ← No asyncio
+    generate_scary_voice(full_text, audio_path)
     
     vid_path = os.path.join(OUTPUT_DIR, f"scary_{data['id']}.mp4")
     render_scary_video(data, audio_path, vid_path)
     
     mgr.save_history(data['id'])
     
-    if os.path.exists(audio_path): os.remove(audio_path)
+    if os.path.exists(audio_path): 
+        os.remove(audio_path)
     for f in os.listdir(CACHE_DIR): 
         fp = os.path.join(CACHE_DIR, f)
-        if os.path.isfile(fp): os.remove(fp)
+        if os.path.isfile(fp): 
+            os.remove(fp)
 
 if __name__ == "__main__":
     main()

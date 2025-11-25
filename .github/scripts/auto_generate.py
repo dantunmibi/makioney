@@ -4,6 +4,7 @@ import random
 import re
 import requests
 import subprocess
+import time
 import numpy as np
 from PIL import Image
 from moviepy.editor import *
@@ -69,11 +70,10 @@ class AutoContentManager:
 
     def _scrape_reddit(self):
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
-        # Add random delay to avoid rate limiting
-        import time
+        # Random delay to avoid rate limiting
         time.sleep(random.uniform(1, 3))
         
         urls = [
@@ -86,12 +86,37 @@ class AutoContentManager:
                 r = requests.get(url, headers=headers, timeout=10)
                 if r.status_code == 200:
                     data = r.json()
-                    # ... rest of parsing logic
+                    
+                    for post in data['data']['children']:
+                        title = post['data']['title']
+                        pid = post['data']['id']
+                        
+                        # Regex to extract A and B
+                        match = re.search(r"(?i)would you rather\s+(.*?)\s+(?:or|,\s*or)\s+(.*)", title)
+                        if match:
+                            opt_a = match.group(1).strip('?.! ')
+                            opt_b = match.group(2).strip('?.! ')
+                            
+                            # Simulate stats based on upvote ratio
+                            ratio = post['data']['upvote_ratio']
+                            stat_a = int(ratio * 100)
+                            
+                            # Add variance so it's not always clean numbers
+                            if stat_a > 90: stat_a = 88
+                            if stat_a < 10: stat_a = 12
+                            
+                            return {
+                                "id": pid,
+                                "option_a": opt_a,
+                                "option_b": opt_b,
+                                "stats": [stat_a, 100-stat_a]
+                            }
                     break
-            except:
+            except Exception as e:
+                print(f"⚠️ URL {url} failed: {e}")
                 continue
         
-        return None  # Falls back to offline generator
+        return None
 
     def _generate_offline(self):
         # Content Bank
@@ -102,7 +127,7 @@ class AutoContentManager:
         opt_a = f"{random.choice(verbs)} {random.choice(nouns)} {random.choice(conditions)}"
         opt_b = f"{random.choice(verbs)} {random.choice(nouns)} {random.choice(conditions)}"
         
-        pid = str(abs(hash(opt_a + opt_b)))  # abs() to avoid negative IDs
+        pid = str(abs(hash(opt_a + opt_b)))
         s1 = random.randint(35, 65)
         
         return {"id": pid, "option_a": opt_a, "option_b": opt_b, "stats": [s1, 100-s1]}
@@ -116,7 +141,6 @@ class AssetGenerator:
         encoded = requests.utils.quote(clean_prompt)
         filename = os.path.join(CACHE_DIR, f"{side}_{abs(hash(prompt))}.jpg")
         
-        # Use Replicate's free endpoint (faster and more reliable)
         apis = [
             f"https://pollinations.ai/p/{encoded}?width=1080&height=960&nologo=true&enhance=true",
             f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=960&nologo=true",
@@ -128,13 +152,11 @@ class AssetGenerator:
                 r = requests.get(api_url, timeout=45, stream=True)
                 
                 if r.status_code == 200:
-                    # Download in chunks to avoid timeout
                     with open(filename, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
                     
-                    # Verify it's a valid image
                     if os.path.exists(filename) and os.path.getsize(filename) > 5000:
                         print(f"✅ Image generated successfully")
                         return filename
@@ -163,7 +185,7 @@ def render_video(scenario, audio_path, output_file):
     
     # Audio Setup
     audio_clip = AudioFileClip(audio_path)
-    duration = audio_clip.duration + 5.0  # 3s think + 2s reveal
+    duration = audio_clip.duration + 5.0
     W, H = 1080, 1920
 
     # 1. Background Layer (AI Image OR Gradient)
@@ -171,7 +193,6 @@ def render_video(scenario, audio_path, output_file):
         img_path = assets.get_ai_image(text, side)
         if img_path and os.path.exists(img_path):
             clip = ImageClip(img_path).resize(newsize=(W, H//2))
-            # Dark Overlay for text readability
             darken = ColorClip(size=(W, H//2), color=(0,0,0)).set_opacity(0.55)
             return CompositeVideoClip([clip, darken]).set_position(pos).set_duration(duration)
         else:
@@ -183,11 +204,9 @@ def render_video(scenario, audio_path, output_file):
 
     # 2. Text Helpers (Shadow + Main)
     def make_text(txt, size, pos, start=0):
-        # Shadow
         s = TextClip(txt, font=FONT_PATH, fontsize=size, color='black', 
                      method='caption', size=(900, None), align='center')
         
-        # Handle 'center' positioning properly
         if isinstance(pos[0], str) and pos[0] == 'center':
             shadow_pos = ('center', pos[1] + 4)
         else:
@@ -195,7 +214,6 @@ def render_video(scenario, audio_path, output_file):
         
         s = s.set_position(shadow_pos).set_opacity(0.6).set_start(start).set_duration(duration-start)
         
-        # Main
         m = TextClip(txt, font=FONT_PATH, fontsize=size, color='white', 
                      method='caption', size=(900, None), align='center')
         m = m.set_position(pos).set_start(start).set_duration(duration-start)
@@ -206,7 +224,6 @@ def render_video(scenario, audio_path, output_file):
     opt_a_s, opt_a_m = make_text(scenario['option_a'], 70, ('center', 450))
     opt_b_s, opt_b_m = make_text(scenario['option_b'], 70, ('center', 1400))
 
-    # VS Badge
     vs_box = ColorClip(size=(220, 160), color=(20,20,20)).set_position('center').set_duration(duration)
     vs_txt = TextClip("VS", font=FONT_PATH, fontsize=85, color='white').set_position('center').set_duration(duration)
 
@@ -215,8 +232,6 @@ def render_video(scenario, audio_path, output_file):
     timer_bg = ColorClip(size=(W, 20), color=(50,50,50)).set_position(('center', timer_y)).set_duration(duration)
     
     choice_time = duration - 2.0
-    
-    # Use a moving clip to simulate shrinking
     timer_fill = ColorClip(size=(W, 20), color=(255, 200, 0))
     timer_fill = timer_fill.set_position(
         lambda t: (-int(W * (t/choice_time)), timer_y) if t < choice_time else (-W, timer_y)
@@ -252,29 +267,23 @@ def generate_audio(text, filename):
         
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Collect all audio chunks
         audio_chunks = []
         for chunk in pipeline(text, voice="af_bella"):
-            # Flatten chunk if it's multidimensional
             if isinstance(chunk, np.ndarray):
                 audio_chunks.append(chunk.flatten())
             else:
                 audio_chunks.append(np.array(chunk).flatten())
         
-        # Concatenate all flattened chunks
         audio_array = np.concatenate(audio_chunks)
         
-        # Ensure it's int16 format for WAV
         if audio_array.dtype != np.int16:
             audio_array = (audio_array * 32767).astype(np.int16)
         
-        # Save as WAV first
         temp_wav = filename.replace('.mp3', '_temp.wav')
         
         import scipy.io.wavfile as wav
         wav.write(temp_wav, 24000, audio_array)
         
-        # Convert to MP3
         subprocess.run([
             'ffmpeg', '-i', temp_wav, 
             '-codec:a', 'libmp3lame', 
@@ -293,32 +302,27 @@ def generate_audio(text, filename):
         tts = gTTS(text=text, lang='en', slow=False, tld='com')
         tts.save(filename)
         print(f"✅ Audio saved with gTTS: {filename}")
+
 # --- EXECUTION ---
 
 def main():
-    # 1. Get Content
     mgr = AutoContentManager()
     data = mgr.get_content()
     
     print(f"✅ LOCKED: {data['option_a']} vs {data['option_b']}")
     
-    # 2. Generate Audio
     audio_script = f"Would you rather {data['option_a']}, or {data['option_b']}? Make your choice."
     audio_path = os.path.join(OUTPUT_DIR, "voice.mp3")
     generate_audio(audio_script, audio_path)
     
-    # 3. Render Video
     video_path = os.path.join(OUTPUT_DIR, f"wyr_{data['id']}.mp4")
     render_video(data, audio_path, video_path)
     
-    # 4. Update History
     mgr.save_history(data['id'])
     
-    # 5. Cleanup
     if os.path.exists(audio_path): 
         os.remove(audio_path)
     
-    # Clean cache to prevent disk bloat
     for f in os.listdir(CACHE_DIR):
         file_path = os.path.join(CACHE_DIR, f)
         if os.path.isfile(file_path):
