@@ -267,23 +267,45 @@ def generate_audio(text, filename):
         
         pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        audio_chunks = []
-        for chunk in pipeline(text, voice="af_bella"):
-            if isinstance(chunk, np.ndarray):
-                audio_chunks.append(chunk.flatten())
-            else:
-                audio_chunks.append(np.array(chunk).flatten())
+        # Generate audio - handle different return types
+        result = pipeline(text, voice="af_bella")
         
-        audio_array = np.concatenate(audio_chunks)
+        # Check if it's already an array
+        if isinstance(result, np.ndarray):
+            audio_array = result
+        else:
+            # It's a generator - collect chunks
+            chunks = list(result)
+            if len(chunks) == 0:
+                raise ValueError("No audio chunks generated")
+            
+            # Try to concatenate - if shapes don't match, flatten everything
+            try:
+                audio_array = np.concatenate(chunks)
+            except ValueError:
+                # Shapes mismatch - flatten each chunk first
+                flat_chunks = []
+                for chunk in chunks:
+                    if isinstance(chunk, np.ndarray):
+                        flat_chunks.extend(chunk.flatten())
+                    else:
+                        flat_chunks.extend(np.array(chunk).flatten())
+                audio_array = np.array(flat_chunks)
         
-        if audio_array.dtype != np.int16:
+        # Ensure proper dtype
+        if audio_array.dtype == np.float32 or audio_array.dtype == np.float64:
+            # Normalize to -1 to 1 range if needed
+            audio_array = np.clip(audio_array, -1, 1)
             audio_array = (audio_array * 32767).astype(np.int16)
+        elif audio_array.dtype != np.int16:
+            audio_array = audio_array.astype(np.int16)
         
+        # Save as WAV
         temp_wav = filename.replace('.mp3', '_temp.wav')
-        
         import scipy.io.wavfile as wav
         wav.write(temp_wav, 24000, audio_array)
         
+        # Convert to MP3
         subprocess.run([
             'ffmpeg', '-i', temp_wav, 
             '-codec:a', 'libmp3lame', 
