@@ -1,7 +1,7 @@
 moviepy==1.0.3
 requests==2.31.0
 numpy==1.26.3
-pillow==9.5.0
+Pillow==9.5.0
 decorator==4.4.2
 imageio==2.33.1
 imageio-ffmpeg==0.4.9
