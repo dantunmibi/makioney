@@ -322,132 +322,115 @@ def render_video(scenario, audio_path, output_file):
 
 # --- MODULE 4: AUDIO GENERATION (FIXED KOKORO) ---
 
-def generate_audio(text, filename):
+def generate_audio(self, text, filename):
     """
-    Generate audio with Kokoro TTS (November 2025 implementation)
-    Uses streaming iterator pattern with proper dtype handling
+    Generate audio using Kokoro TTS with robust error handling.
+    Falls back to gTTS if Kokoro fails.
     """
     try:
-        print("🎤 Generating audio with Kokoro TTS...")
         import kokoro
         import numpy as np
+        import torch
+        from scipy.io import wavfile
+        import subprocess
+        import os
         
-        # Initialize pipeline
-        tts = kokoro.KPipeline(lang_code="en-us")
+        print("🎤 Generating audio with Kokoro TTS...")
         
-        # Generate audio with proper streaming handling
-        audio_stream = tts(text, voice="af_bella", speed=1.0)
-        
-        # Collect audio chunks properly
-        audio_chunks = []
-        chunk_count = 0
-        
-        for chunk in audio_stream:
-            chunk_count += 1
-            
-            # Handle different chunk types
-            if isinstance(chunk, np.ndarray):
-                audio_data = chunk
-            elif hasattr(chunk, 'numpy'):
-                audio_data = chunk.numpy()
-            elif hasattr(chunk, '__array__'):
-                audio_data = np.asarray(chunk)
-            else:
-                audio_data = np.array(chunk, dtype=np.float32)
-            
-            # Ensure 1D array
-            if audio_data.ndim > 1:
-                audio_data = audio_data.flatten()
-            
-            # Ensure float32 dtype
-            if audio_data.dtype != np.float32:
-                audio_data = audio_data.astype(np.float32)
-            
-            audio_chunks.append(audio_data)
-        
-        if not audio_chunks:
-            raise ValueError("No audio chunks generated")
-        
-        print(f"    📦 Collected {chunk_count} audio chunks")
-        
-        # Concatenate all chunks
-        audio_array = np.concatenate(audio_chunks, axis=0)
-        
-        # Normalize to [-1, 1] range if needed
-        max_val = np.abs(audio_array).max()
-        if max_val > 1.0:
-            audio_array = audio_array / max_val
-        
-        # Convert to int16 for WAV
-        audio_array = np.clip(audio_array, -1.0, 1.0)
-        audio_int16 = (audio_array * 32767).astype(np.int16)
-        
-        # Save as WAV
-        import scipy.io.wavfile as wavfile
-        temp_wav = filename.replace('.mp3', '_temp.wav')
-        
-        sample_rate = 24000
-        wavfile.write(temp_wav, sample_rate, audio_int16)
-        
-        print(f"    💾 Saved WAV: {len(audio_int16)} samples at {sample_rate}Hz")
-        
-        # Convert to MP3 using ffmpeg
-        result = subprocess.run([
-            'ffmpeg', '-y',
-            '-i', temp_wav,
-            '-codec:a', 'libmp3lame',
-            '-qscale:a', '2',
-            '-ar', '24000',
-            filename
-        ], 
-        capture_output=True, 
-        stderr=subprocess.PIPE,
-        timeout=30
+        # Initialize Kokoro pipeline
+        pipeline = kokoro.KPipeline(
+            lang_code="en-us",
+            repo_id='hexgrad/Kokoro-82M'
         )
         
-        if result.returncode != 0:
-            raise Exception(f"FFmpeg failed: {result.stderr.decode()[:100]}")
+        # Generate audio
+        result = pipeline(text, voice="af_bella")
         
-        # Cleanup
-        if os.path.exists(temp_wav):
-            os.remove(temp_wav)
+        # Collect and process chunks robustly
+        valid_chunks = []
+        
+        for idx, chunk in enumerate(result):
+            try:
+                # Convert to numpy array
+                if isinstance(chunk, torch.Tensor):
+                    chunk_array = chunk.detach().cpu().numpy()
+                elif isinstance(chunk, np.ndarray):
+                    chunk_array = chunk.copy()
+                elif isinstance(chunk, (list, tuple)):
+                    chunk_array = np.array(chunk, dtype=np.float32)
+                else:
+                    # Unknown type, try conversion
+                    chunk_array = np.asarray(chunk, dtype=np.float32)
+                
+                # Flatten to 1D
+                chunk_array = chunk_array.flatten()
+                
+                # Validate non-empty
+                if chunk_array.size > 0 and not np.all(np.isnan(chunk_array)):
+                    valid_chunks.append(chunk_array)
+                    
+            except Exception as chunk_err:
+                print(f"  ⚠️ Skipping chunk {idx}: {chunk_err}")
+                continue
+        
+        # Verify we have audio data
+        if len(valid_chunks) == 0:
+            raise ValueError("No valid audio chunks produced")
+        
+        print(f"  ✓ Processed {len(valid_chunks)} audio chunks")
+        
+        # Concatenate all chunks
+        audio_array = np.concatenate(valid_chunks)
+        
+        # Normalize to [-1, 1]
+        max_val = np.abs(audio_array).max()
+        if max_val > 0:
+            audio_array = audio_array / max_val
+        audio_array = np.clip(audio_array, -1.0, 1.0)
+        
+        # Convert to 16-bit integer
+        audio_int16 = (audio_array * 32767).astype(np.int16)
+        
+        # Save as WAV first
+        wav_temp = filename.replace('.mp3', '_kokoro_temp.wav')
+        sample_rate = 24000  # Kokoro default
+        wavfile.write(wav_temp, sample_rate, audio_int16)
+        
+        print(f"  ✓ WAV created: {wav_temp}")
+        
+        # Convert WAV to MP3 using ffmpeg
+        ffmpeg_result = subprocess.run([
+            'ffmpeg', '-y',
+            '-i', wav_temp,
+            '-codec:a', 'libmp3lame',
+            '-qscale:a', '2',
+            '-ar', '24000',  # Match sample rate
+            filename
+        ], capture_output=True, text=True)
+        
+        if ffmpeg_result.returncode != 0:
+            raise Exception(f"FFmpeg failed: {ffmpeg_result.stderr}")
+        
+        # Cleanup temp file
+        os.remove(wav_temp)
         
         print(f"✅ Kokoro audio saved: {filename}")
-        return True
+        return filename
         
-    except Exception as e:
-        print(f"⚠️ Kokoro TTS failed: {str(e)[:150]}")
-        print(f"    🔄 Falling back to gTTS...")
+    except Exception as kokoro_error:
+        print(f"⚠️ Kokoro TTS failed: {str(kokoro_error)[:100]}")
+        print("    🔄 Falling back to gTTS...")
         
+        # Fallback to gTTS
         try:
             from gtts import gTTS
-            tts = gTTS(text=text, lang='en', slow=False, tld='com')
+            tts = gTTS(text=text, lang='en', slow=False)
             tts.save(filename)
             print(f"✅ gTTS audio saved: {filename}")
-            return True
+            return filename
         except Exception as gtts_error:
-            print(f"❌ gTTS also failed: {gtts_error}")
-            
-            # Last resort: silent audio
-            import numpy as np
-            import scipy.io.wavfile as wavfile
-            
-            silent = np.zeros(int(24000 * 5), dtype=np.int16)
-            temp_wav = filename.replace('.mp3', '_silent.wav')
-            wavfile.write(temp_wav, 24000, silent)
-            
-            subprocess.run([
-                'ffmpeg', '-y', '-i', temp_wav,
-                '-codec:a', 'libmp3lame', '-qscale:a', '2',
-                filename
-            ], capture_output=True)
-            
-            if os.path.exists(temp_wav):
-                os.remove(temp_wav)
-            
-            print(f"⚠️ Created silent fallback audio")
-            return False
-
+            print(f"❌ Both TTS methods failed!")
+            raise gtts_error
 # --- EXECUTION ---
 
 def main():
