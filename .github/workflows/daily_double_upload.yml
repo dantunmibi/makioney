@@ -1,0 +1,99 @@
+name: Daily Triple Feature (WYR + Scary + Facts)
+
+on:
+  schedule:
+    - cron: '0 10 * * *'  # Runs daily at 10:00 UTC
+  workflow_dispatch:      # Manual Trigger
+
+permissions:
+  contents: write
+
+jobs:
+  # --- JOB 1: WOULD YOU RATHER ---
+  generate_wyr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y imagemagick
+          sudo sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml
+          pip install -r requirements.txt
+
+      - name: Run WYR Generator
+        run: python .github/scripts/auto_generate.py
+
+      - name: Commit WYR History
+        run: |
+          git config --global user.name "WYR Bot"
+          git config --global user.email "bot@github.com"
+          git pull
+          git add data/history.json
+          git commit -m "Update WYR History" || echo "No changes"
+          git push
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: video-wyr
+          path: output/wyr_*.mp4
+
+  # --- JOB 2: MYTHICA REPORT (SCARY) ---
+  generate_scary:
+    runs-on: ubuntu-latest
+    needs: generate_wyr  # WAIT for Job 1 to finish to avoid git conflicts
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y imagemagick
+          sudo sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml
+          pip install -r requirements.txt
+
+      - name: Run Scary Generator
+        run: python .github/scripts/generate_scary_short.py
+
+      - name: Commit Scary History
+        run: |
+          git config --global user.name "Scary Bot"
+          git config --global user.email "bot@github.com"
+          git pull --rebase # Pull changes from Job 1
+          git add data/scary_history.json
+          git commit -m "Update Scary History" || echo "No changes"
+          git push
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: video-scary
+          path: output/scary_*.mp4
+
+  # --- JOB 3: MYTHICA REPORT (WEIRD FACTS) ---
+  generate_weird_fact:
+    runs-on: ubuntu-latest
+    needs: generate_scary # WAIT for Job 2 to finish to avoid git conflicts
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y imagemagick
+          sudo sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml
+          pip install -r requirements.txt
+
+      - name: Run Weird Fact Generator
+        run: python .github/scripts/generate_weird_fact.py
+
+      - name: Commit Fact History
+        run: |
+          git config --global user.name "Fact Bot"
+          git config --global user.email "bot@github.com"
+          git pull --rebase # Pull changes from Job 2
+          git add data/weird_facts_history.json
+          git commit -m "Update Fact History" || echo "No changes"
+          git push
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: video-weird-fact
+          path: output/weird_fact_*.mp4
