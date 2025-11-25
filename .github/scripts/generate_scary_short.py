@@ -85,9 +85,11 @@ def generate_scary_voice(text, filename):
         print("🎤 Generating scary voice with Kokoro...")
         import kokoro
         
+        # Initialize pipeline
+        pipeline = kokoro.KPipeline(lang_code="en-us")
+        
         # Use deeper male voice for horror
-        voice = kokoro.KPipeline(lang_code="en-us", voice="am_adam")
-        audio_array = voice(text)
+        audio_array = pipeline(text, voice="am_adam")
         
         # Save as WAV
         import scipy.io.wavfile as wav
@@ -97,18 +99,20 @@ def generate_scary_voice(text, filename):
         # Apply pitch shift for creepiness using ffmpeg
         subprocess.run([
             'ffmpeg', '-i', temp_wav,
-            '-af', 'asetrate=24000*0.9,atempo=1.11,aresample=24000',  # Lower pitch
+            '-af', 'asetrate=24000*0.9,atempo=1.11,aresample=24000',
             '-codec:a', 'libmp3lame', '-qscale:a', '2',
             '-y', filename
         ], check=True, capture_output=True, stderr=subprocess.PIPE)
         
-        if os.path.exists(temp_wav): os.remove(temp_wav)
+        if os.path.exists(temp_wav): 
+            os.remove(temp_wav)
+        
         print(f"✅ Scary audio generated")
         
     except Exception as e:
         print(f"⚠️ Kokoro failed ({e}), using gTTS...")
         from gtts import gTTS
-        tts = gTTS(text=text, lang='en', slow=True)  # Slow for creepiness
+        tts = gTTS(text=text, lang='en', slow=True)
         tts.save(filename)
 
 # --- MODULE 4: RENDER ENGINE ---

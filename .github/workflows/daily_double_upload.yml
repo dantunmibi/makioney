@@ -14,10 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y imagemagick
+          sudo apt-get update && sudo apt-get install -y imagemagick ffmpeg
           sudo sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml
           pip install -r requirements.txt
 
@@ -28,9 +30,9 @@ jobs:
         run: |
           git config --global user.name "WYR Bot"
           git config --global user.email "bot@github.com"
-          git pull
           git add data/history.json
           git commit -m "Update WYR History" || echo "No changes"
+          git pull --rebase origin main
           git push
 
       - uses: actions/upload-artifact@v4
@@ -41,13 +43,20 @@ jobs:
   # --- JOB 2: MYTHICA REPORT (SCARY) ---
   generate_scary:
     runs-on: ubuntu-latest
-    needs: generate_wyr # WAIT for Job 1 to finish to avoid git conflicts
+    needs: generate_wyr
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Pull Latest Changes
+        run: |
+          git pull origin main
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y imagemagick
+          sudo apt-get update && sudo apt-get install -y imagemagick ffmpeg
           sudo sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml
           pip install -r requirements.txt
 
@@ -58,9 +67,9 @@ jobs:
         run: |
           git config --global user.name "Scary Bot"
           git config --global user.email "bot@github.com"
-          git pull --rebase # Pull changes from Job 1
           git add data/scary_history.json
           git commit -m "Update Scary History" || echo "No changes"
+          git pull --rebase origin main
           git push
 
       - uses: actions/upload-artifact@v4
@@ -71,13 +80,20 @@ jobs:
   # --- JOB 3: MYTHICA REPORT (WEIRD FACTS) ---
   generate_weird_fact:
     runs-on: ubuntu-latest
-    needs: generate_scary # WAIT for Job 2 to finish to avoid git conflicts
+    needs: generate_scary
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Pull Latest Changes
+        run: |
+          git pull origin main
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y imagemagick
+          sudo apt-get update && sudo apt-get install -y imagemagick ffmpeg
           sudo sed -i 's/none/read,write/g' /etc/ImageMagick-6/policy.xml
           pip install -r requirements.txt
 
@@ -88,9 +104,9 @@ jobs:
         run: |
           git config --global user.name "Fact Bot"
           git config --global user.email "bot@github.com"
-          git pull --rebase # Pull changes from Job 2
           git add data/weird_facts_history.json
           git commit -m "Update Fact History" || echo "No changes"
+          git pull --rebase origin main
           git push
 
       - uses: actions/upload-artifact@v4

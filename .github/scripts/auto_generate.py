@@ -242,14 +242,11 @@ def generate_audio(text, filename):
         print("🎤 Generating audio with Kokoro TTS...")
         import kokoro
         
-        # Initialize voice
-        voice = kokoro.KPipeline(
-            lang_code="en-us", 
-            voice="af_bella"  # Options: af_bella, af_sarah, am_adam, am_michael, bf_emma
-        )
+        # Initialize pipeline without voice parameter
+        pipeline = kokoro.KPipeline(lang_code="en-us")
         
-        # Generate audio array
-        audio_array = voice(text)
+        # Generate audio array - pass voice as parameter to the call
+        audio_array = pipeline(text, voice="af_bella")
         
         # Save as WAV first
         temp_wav = filename.replace('.mp3', '_temp.wav')
@@ -286,7 +283,6 @@ def generate_audio(text, filename):
             # Create silent audio as last resort
             silent = AudioClip(lambda t: 0, duration=5)
             silent.write_audiofile(filename, fps=44100, codec='libmp3lame')
-
 # --- EXECUTION ---
 
 def main():

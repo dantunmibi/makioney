@@ -92,9 +92,11 @@ def generate_voice(text, filename):
         
         script = f"Here is a fact that sounds fake, but is actually true. {text}"
         
+        # Initialize pipeline
+        pipeline = kokoro.KPipeline(lang_code="en-us")
+        
         # Use energetic female voice
-        voice = kokoro.KPipeline(lang_code="en-us", voice="af_sarah")
-        audio_array = voice(script)
+        audio_array = pipeline(script, voice="af_sarah")
         
         import scipy.io.wavfile as wav
         temp_wav = filename.replace('.mp3', '_temp.wav')
@@ -106,8 +108,9 @@ def generate_voice(text, filename):
             '-y', filename
         ], check=True, capture_output=True, stderr=subprocess.PIPE)
         
-        if os.path.exists(temp_wav): os.remove(temp_wav)
-        
+        if os.path.exists(temp_wav): 
+            os.remove(temp_wav)
+            
     except Exception as e:
         print(f"⚠️ Kokoro failed ({e}), using gTTS...")
         from gtts import gTTS
